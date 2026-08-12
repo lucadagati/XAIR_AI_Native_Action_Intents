@@ -15,25 +15,26 @@ Nodo remoto per inferenza VLM/LLM (Paper 2, suite A1–A4).
 | Inferenza | **Ollama** (`:11434`) |
 | Disco | ~531 GB totali, ~411 GB liberi |
 
-## Modelli Ollama (2026-08-11)
+## Modelli Ollama (2026-08-12)
 
-| Modello | Size | Uso Paper 2 |
-|---------|------|-------------|
-| `qwen2.5vl:7b` | 6.0 GB | Vision + AIS da immagini VisA/MVTec |
-| `qwen2.5-coder:7b` | 4.7 GB | Smoke test / latenza bassa |
-| `qwen3-coder:30b` | 18 GB | AIS strutturato principale |
-| `qwen3.5:latest` | 6.6 GB | VLM leggero + tools |
+| Modello | Size | Uso |
+|---------|------|-----|
+| `qwen2.5vl:3b` | 3.2 GB | Vision leggero, routing study |
+| `qwen2.5vl:7b` | 6.0 GB | Vision primario + varianti prompt |
+| `llama3.2-vision:11b` | 7.8 GB | Vision medio |
+| `gemma3:12b` | 8.1 GB | Vision medio |
+| `qwen2.5vl:32b` | 21 GB | Vision massima latenza |
 
 Elenco live: `./scripts/gpu/ssh-gpu.sh 'ollama list'`
 
 ## Dataset vision (no camera live)
 
-Paper 2 usa **VisA + MVTec AD** — vedi [`XAIR_Runtime/experiments/datasets/manufacturing-a1/README.md`](../../../XAIR_Runtime/experiments/datasets/manufacturing-a1/README.md).
+VisA + MVTec AD — vedi [dataset-manufacturing-a1.md](dataset-manufacturing-a1.md).
 
 ```bash
 cd XAIR_Runtime/experiments/datasets/manufacturing-a1/scripts
 ./download_visa.sh && ./download_mvtec.sh
-python3 build_manifest.py --total 100 --seed 42
+python3 build_manifest.py --total 2000 --seed 42
 ```
 
 ## Accesso
