@@ -12,8 +12,11 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
-if git remote get-url origin >/dev/null 2>&1; then
-  echo "Remote origin already set: $(git remote get-url origin)"
+if gh repo view "$REPO" >/dev/null 2>&1; then
+  echo "Repository already exists: https://github.com/${REPO#*/}"
+elif git remote get-url origin >/dev/null 2>&1; then
+  # Remote was set locally before the GitHub repo existed — create it, then push.
+  gh repo create "$REPO" --public --description "$DESC"
 else
   gh repo create "$REPO" --public --description "$DESC" --source=. --remote=origin
 fi
