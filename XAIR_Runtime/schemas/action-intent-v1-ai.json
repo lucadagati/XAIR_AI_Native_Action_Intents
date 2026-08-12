@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xair.dev/schemas/action-intent-v1-ai.json",
+  "title": "Action Intent Schema (AIS v1 + AI extensions)",
+  "description": "Extends AIS v1 with optional AI producer metadata. XAIR core validates base AIS fields only.",
+  "allOf": [
+    { "$ref": "action-intent-v1.json" },
+    {
+      "type": "object",
+      "properties": {
+        "extensions": {
+          "type": "object",
+          "properties": {
+            "model_id": { "type": "string" },
+            "prompt_hash": { "type": "string" },
+            "inference_latency_ms": { "type": "number", "minimum": 0 },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "grounded_preconditions": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "evidence": {
+              "type": "object",
+              "properties": {
+                "frame_id": { "type": "string" },
+                "image_path": { "type": "string" },
+                "source_dataset": { "type": "string", "enum": ["visa", "mvtec_ad", "synthetic", "unity"] },
+                "category": { "type": "string" },
+                "scene_hash": { "type": "string" },
+                "detections": {
+                  "type": "array",
+                  "items": { "type": "object" }
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    }
+  ]
+}
