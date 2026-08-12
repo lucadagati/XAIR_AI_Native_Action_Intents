@@ -1,0 +1,66 @@
+{
+  "manifest": "/home/ubuntu/adaptix/XAIR_Runtime/experiments/datasets/manufacturing-a1/manifest.jsonl",
+  "frames": 2000,
+  "pool": {
+    "defective": 2458,
+    "nominal": 13717,
+    "total": 16175
+  },
+  "categories": 27,
+  "by_source": {
+    "mvtec_ad": 1112,
+    "visa": 888
+  },
+  "by_severity": {
+    "major": 510,
+    "minor": 490,
+    "none": 1000
+  },
+  "by_use_case": {
+    "uc1_triage": 400,
+    "uc2_restart": 400,
+    "uc3_speed": 400,
+    "uc4_conflict": 400,
+    "uc5_safety": 400
+  },
+  "by_ground_truth_action": {
+    "ACCEPT": 600,
+    "E_STOP": 102,
+    "HOLD_FOR_OPERATOR": 196,
+    "REJECT_TO_BIN": 102,
+    "RESUME": 400,
+    "SLOW_DOWN": 98,
+    "STOP": 502
+  },
+  "missing_masks": 0,
+  "mask_read_failures": 0,
+  "severity_thresholds_by_category": {
+    "bottle": 0.057178,
+    "cable": 0.036808,
+    "candle": 0.001535,
+    "capsule": 0.004295,
+    "capsules": 0.001492,
+    "carpet": 0.014757,
+    "cashew": 0.001473,
+    "chewinggum": 0.00533,
+    "fryum": 0.002134,
+    "grid": 0.006015,
+    "hazelnut": 0.016158,
+    "leather": 0.004615,
+    "macaroni1": 0.000518,
+    "macaroni2": 0.00047,
+    "metal_nut": 0.036714,
+    "pcb1": 0.001982,
+    "pcb2": 0.002656,
+    "pcb3": 0.002384,
+    "pcb4": 0.009298,
+    "pill": 0.010327,
+    "pipe_fryum": 0.001622,
+    "screw": 0.002879,
+    "tile": 0.079303,
+    "toothbrush": 0.010778,
+    "transistor": 0.020284,
+    "wood": 0.028955,
+    "zipper": 0.023544
+  }
+}
