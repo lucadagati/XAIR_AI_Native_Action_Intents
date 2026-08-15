@@ -122,3 +122,14 @@ See [LICENSE](LICENSE). MVTec AD data is CC BY-NC-SA 4.0 (academic use only); Vi
 ## Citation
 
 If you use this harness, please cite the XAIR runtime and the AI-native intents paper (when published). See `XAIR_Runtime/CITATION.cff`.
+
+## Paper 2 offline reproduction (B1–B5)
+
+See [`XAIR_Runtime/PAPER2_ARTIFACT.md`](XAIR_Runtime/PAPER2_ARTIFACT.md) and:
+
+```bash
+cd XAIR_Runtime && ./scripts/reproduce_paper2_offline.sh
+```
+
+Requires a Phase-P perception cache under `experiments/results/perception_cache/`. CPU-only; no GPU Phase P re-run.
+

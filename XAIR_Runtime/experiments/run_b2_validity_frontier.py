@@ -280,6 +280,12 @@ def _finalize(acc: Counter) -> dict:
     hazard = acc["hazardous_publish"] / n
     revocable = acc["revocable"]
     wrr = acc["wrongful_revoke"] / revocable if revocable else 0.0
+    # Mean per-trial reward (shared denominator n); WRR remains a secondary conditional rate.
+    mean_r = (
+        acc["successful_actuation"]
+        - LAMBDA_HAZARD * acc["hazardous_publish"]
+        - MU_WRONGFUL_REVOKE * acc["wrongful_revoke"]
+    ) / n
     return {
         "n": n,
         "SAR": sar,
@@ -300,7 +306,9 @@ def _finalize(acc: Counter) -> dict:
         "blocked_grounding_error_k": acc["blocked_grounding_error"],
         "grounding_accuracy": acc["grounding_correct"] / n,
         "context_invalid_rate": acc["ctx_invalid"] / n,
-        "utility": utility(sar, hazard, wrr),
+        "utility": mean_r,
+        "mean_reward": mean_r,
+        "utility_legacy_rate_combo": utility(sar, hazard, wrr),
     }
 
 
@@ -476,21 +484,85 @@ def mcnemar(rows_a: list[dict], rows_b: list[dict], field: str) -> dict:
 
     Only discordant pairs carry information, which is the whole point of pairing: the
     variance from perception is differenced away.
+
+    Pairing key defaults to ``(frame_id, seed)``. Prefer :func:`mcnemar_frame_majority`
+    for publication claims so multiple drift seeds on the same frame are not treated
+    as independent units.
     """
-    index_a = {(r["frame_id"], r["seed"]): bool(r[field]) for r in rows_a}
-    index_b = {(r["frame_id"], r["seed"]): bool(r[field]) for r in rows_b}
+    index_a = {(r["frame_id"], r.get("seed", 0)): bool(r[field]) for r in rows_a}
+    index_b = {(r["frame_id"], r.get("seed", 0)): bool(r[field]) for r in rows_b}
     shared = set(index_a) & set(index_b)
     b = sum(1 for k in shared if index_a[k] and not index_b[k])
     c = sum(1 for k in shared if index_b[k] and not index_a[k])
     n_disc = b + c
     if n_disc == 0:
-        return {"n_pairs": len(shared), "b": 0, "c": 0, "chi2": 0.0, "p_value": 1.0}
+        return {
+            "n_pairs": len(shared),
+            "b": 0,
+            "c": 0,
+            "n_discordant": 0,
+            "chi2": 0.0,
+            "p_value": 1.0,
+            "unit": "frame_seed",
+        }
     chi2 = (abs(b - c) - 1) ** 2 / n_disc  # Yates-corrected
-    # Two-sided normal approximation to the chi-square with one degree of freedom.
     from math import erfc, sqrt
 
     p = erfc(sqrt(max(chi2, 0.0) / 2.0))
-    return {"n_pairs": len(shared), "b": b, "c": c, "chi2": chi2, "p_value": p}
+    return {
+        "n_pairs": len(shared),
+        "b": b,
+        "c": c,
+        "n_discordant": n_disc,
+        "chi2": chi2,
+        "p_value": p,
+        "unit": "frame_seed",
+    }
+
+
+def mcnemar_frame_majority(rows_a: list[dict], rows_b: list[dict], field: str) -> dict:
+    """
+    Frame-clustered McNemar: majority-vote the binary field across seeds per frame,
+    then pair on ``frame_id`` only (one unit per image).
+    """
+    def majority_by_frame(rows: list[dict]) -> dict[str, bool]:
+        buckets: dict[str, list[bool]] = defaultdict(list)
+        for r in rows:
+            buckets[str(r["frame_id"])].append(bool(r[field]))
+        out: dict[str, bool] = {}
+        for fid, vals in buckets.items():
+            out[fid] = sum(vals) * 2 >= len(vals)  # True wins ties
+        return out
+
+    a = majority_by_frame(rows_a)
+    bmap = majority_by_frame(rows_b)
+    shared = set(a) & set(bmap)
+    b = sum(1 for k in shared if a[k] and not bmap[k])
+    c = sum(1 for k in shared if bmap[k] and not a[k])
+    n_disc = b + c
+    if n_disc == 0:
+        return {
+            "n_pairs": len(shared),
+            "b": 0,
+            "c": 0,
+            "n_discordant": 0,
+            "chi2": 0.0,
+            "p_value": 1.0,
+            "unit": "frame_majority",
+        }
+    chi2 = (abs(b - c) - 1) ** 2 / n_disc
+    from math import erfc, sqrt
+
+    p = erfc(sqrt(max(chi2, 0.0) / 2.0))
+    return {
+        "n_pairs": len(shared),
+        "b": b,
+        "c": c,
+        "n_discordant": n_disc,
+        "chi2": chi2,
+        "p_value": p,
+        "unit": "frame_majority",
+    }
 
 
 def paired_tests(headline_rows: list[dict], gates: list[str]) -> dict:
@@ -541,8 +613,23 @@ def main() -> int:
     parser.add_argument("--seeds", nargs="+", type=int, default=list(SEEDS))
     parser.add_argument("--use-repaired", action="store_true",
                         help="submit repaired preconditions instead of exactly what was emitted")
+    parser.add_argument("--fidelity", type=int, default=0, metavar="N",
+                        help="if N>0, run offline-vs-live fidelity check on N frames and exit")
     parser.add_argument("--no-notify", action="store_true")
     args = parser.parse_args()
+
+    if args.fidelity and args.fidelity > 0:
+        from experiments.run_b2_fidelity import main as fidelity_main
+
+        return fidelity_main(
+            [
+                "--tag",
+                args.tag,
+                "--n",
+                str(args.fidelity),
+                *(["--no-notify"] if args.no_notify else []),
+            ]
+        )
 
     notifier = Notifier.from_env()
     if args.no_notify:
@@ -599,7 +686,44 @@ def main() -> int:
         },
     }
 
-    paths = write_outputs(rows, headline_rows, summary, RESULTS_DIR)
+    out_dir = RESULTS_DIR
+    if args.use_repaired:
+        # Write to *_repaired paths so as-emitted artifacts stay intact.
+        class _Redirect:
+            def __init__(self, base: Path):
+                self.base = base
+
+            def __truediv__(self, name: str) -> Path:
+                stem = Path(name).stem
+                suffix = Path(name).suffix
+                if stem.startswith("b2_"):
+                    return self.base / f"{stem}_repaired{suffix}"
+                return self.base / name
+
+            def mkdir(self, *a, **k):
+                return self.base.mkdir(*a, **k)
+
+        # Monkey-patch via custom write
+        paths = {
+            "grid_csv": RESULTS_DIR / "b2_validity_frontier_repaired.csv",
+            "summary_json": RESULTS_DIR / "b2_validity_frontier_repaired.json",
+            "headline_csv": RESULTS_DIR / "b2_headline_trials_repaired.csv",
+        }
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        if rows:
+            with paths["grid_csv"].open("w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+        if headline_rows:
+            fields = sorted({k for r in headline_rows for k in r})
+            with paths["headline_csv"].open("w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(headline_rows)
+        paths["summary_json"].write_text(json.dumps(summary, indent=2, default=str))
+    else:
+        paths = write_outputs(rows, headline_rows, summary, RESULTS_DIR)
     print(json.dumps(summary["best_per_gate"], indent=2))
     print(json.dumps(summary["anchor_effect"], indent=2, default=str))
     for name, path in paths.items():

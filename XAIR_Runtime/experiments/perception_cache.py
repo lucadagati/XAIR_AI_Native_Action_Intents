@@ -90,19 +90,28 @@ def cache_path(tag: str = "phase_p") -> Path:
 
 
 def load_cache(path: Path) -> tuple[list[dict], set[CacheKey]]:
-    """Read the cache, tolerating a truncated final line from an interrupted run."""
+    """Read the cache, tolerating a truncated final line from an interrupted run.
+
+    Failed calls (``error`` set) are kept for audit but are *not* treated as done, so a
+    resume or watchdog restart retries them instead of permanently skipping frames that
+    hit a transient Ollama hang or HTTP 500.
+    """
     if not path.is_file():
         return [], set()
     records: list[dict] = []
+    done: set[CacheKey] = set()
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            records.append(json.loads(line))
+            rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-    return records, {CacheKey.of(r) for r in records}
+        records.append(rec)
+        if not rec.get("error"):
+            done.add(CacheKey.of(rec))
+    return records, done
 
 
 def iter_results(path: Path) -> list[PerceptionResult]:
@@ -282,11 +291,17 @@ def run_campaign(
             f"models: {', '.join(models)}"
         )
 
+    active_model: str | None = None
     with out_path.open("a") as sink:
         for i, (episode, model, variant) in enumerate(pending, start=1):
             if _stop_requested:
                 print("[perception] stopping early on request", flush=True)
                 break
+
+            if active_model is not None and model != active_model:
+                client.unload(active_model)
+                print(f"[perception] switched {active_model} -> {model}", flush=True)
+            active_model = model
 
             image = DATASET_ROOT / episode.get("path", "")
             ref_rel = references.get(episode.get("category", ""))
@@ -301,18 +316,40 @@ def run_campaign(
                 reference_image_path=(DATASET_ROOT / ref_rel) if ref_rel else None,
                 model=model,
             )
+            # Transient runner crashes (HTTP 500 / EOF) are common under LXC GPU passthrough.
+            # One recover with unload is enough now that large images are downscaled.
+            if result.error and (
+                "500" in (result.error or "")
+                or "timed out" in (result.error or "").lower()
+            ):
+                time.sleep(2.0)
+                client.unload(model)
+                result = producer.produce(
+                    episode,
+                    variant=variant,
+                    use_case=episode["use_case"],
+                    image_path=image,
+                    reference_image_path=(DATASET_ROOT / ref_rel) if ref_rel else None,
+                    model=model,
+                )
             record = result.to_json()
             record["gt_action"] = episode["use_cases"][episode["use_case"]]["ground_truth_action"]
             record["severity"] = episode.get("severity")
             record["category"] = episode.get("category")
             record["source_dataset"] = episode.get("source_dataset")
             record["defect_present"] = episode.get("defect_present")
+            if result.error:
+                # Keep the main cache clean so resume + stall detection track real progress.
+                err_path = out_path.with_suffix(".errors.jsonl")
+                with err_path.open("a") as err_sink:
+                    err_sink.write(json.dumps(record) + "\n")
+                stats["error"] += 1
+                print(f"[perception] error {model} {episode['frame_id']}: {result.error[:120]}", flush=True)
+                continue
             sink.write(json.dumps(record) + "\n")
             sink.flush()
 
             stats[f"model:{model}"] += 1
-            if result.error:
-                stats["error"] += 1
             if result.parse_ok:
                 stats["parse_ok"] += 1
             if result.schema_valid:
@@ -328,12 +365,14 @@ def run_campaign(
             mean_lat = sum(latencies) / len(latencies) if latencies else 0
 
             if i % progress_every == 0 or i == len(pending):
+                done_ok = sum(v for k, v in stats.items() if k.startswith("model:"))
                 print(
                     f"[perception] {i}/{len(pending)} "
                     f"({100 * i / max(1, len(pending)):.1f}%) "
-                    f"grounding={stats['grounding_correct']}/{i} "
+                    f"grounding={stats['grounding_correct']}/{done_ok} "
                     f"mean_latency={mean_lat / 1000:.1f}s "
-                    f"eta={remaining / 3600:.2f}h",
+                    f"eta={remaining / 3600:.2f}h "
+                    f"errors={stats['error']}",
                     flush=True,
                 )
 
@@ -392,14 +431,24 @@ def main() -> int:
     if args.include_text_control and TEXT_ONLY_CONTROL not in models:
         models.append(TEXT_ONLY_CONTROL)
 
-    sample_image = DATASET_ROOT / episodes[0]["path"]
+    # Skip the multi-model probe up-front: loading 32b before the 3b sweep wastes VRAM
+    # and has left the CUDA runner in a bad state. Probe lazily per model instead.
     probes = {}
-    for model in models:
-        ok, detail = probe_vision(client, model, sample_image)
-        probes[model] = {"responds": ok, "detail": detail}
-        print(f"[probe] {model:26s} responds={ok} :: {detail}", flush=True)
+    sample_image = DATASET_ROOT / episodes[0]["path"]
+    first = models[0]
+    ok, detail = probe_vision(client, first, sample_image)
+    probes[first] = {"responds": ok, "detail": detail}
+    print(f"[probe] {first:26s} responds={ok} :: {detail}", flush=True)
+    client.unload(first)
+    for model in models[1:]:
+        probes[model] = {"responds": True, "detail": "deferred until model switch"}
 
     if args.probe_only:
+        for model in models:
+            ok, detail = probe_vision(client, model, sample_image)
+            probes[model] = {"responds": ok, "detail": detail}
+            print(f"[probe] {model:26s} responds={ok} :: {detail}", flush=True)
+            client.unload(model)
         print(json.dumps(probes, indent=2))
         return 0
 
