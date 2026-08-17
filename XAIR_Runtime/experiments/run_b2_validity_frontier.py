@@ -478,12 +478,73 @@ def hazard_curves(rows: list[dict], *, gate: str, anchor: str, freshness_ms: int
     ]
 
 
+def mcnemar_exact_p(b: int, c: int) -> float:
+    """Two-sided exact McNemar: ``2 * Binom.cdf(min(b,c), b+c, 0.5)``, clipped to 1."""
+    n = int(b) + int(c)
+    if n == 0:
+        return 1.0
+    k = min(int(b), int(c))
+    try:
+        from scipy.stats import binom
+
+        p = 2.0 * float(binom.cdf(k, n, 0.5))
+    except Exception:
+        p = 2.0 * _binom_cdf_half(k, n)
+    return min(1.0, p)
+
+
+def _binom_cdf_half(k: int, n: int) -> float:
+    """P(X <= k) for X ~ Binomial(n, 0.5) via log-sum-exp (no scipy)."""
+    if k < 0:
+        return 0.0
+    if k >= n:
+        return 1.0
+    from math import exp, lgamma, log
+
+    log_p = -n * log(2.0)
+    logs = [
+        lgamma(n + 1) - lgamma(i + 1) - lgamma(n - i + 1) + log_p for i in range(k + 1)
+    ]
+    m = max(logs)
+    return exp(m) * sum(exp(x - m) for x in logs)
+
+
+def mcnemar_yates_p(b: int, c: int) -> tuple[float, float]:
+    """Return ``(chi2_yates, p_yates)``; p=1 when there are no discordant pairs."""
+    n_disc = int(b) + int(c)
+    if n_disc == 0:
+        return 0.0, 1.0
+    chi2 = (abs(int(b) - int(c)) - 1) ** 2 / n_disc
+    from math import erfc, sqrt
+
+    return chi2, erfc(sqrt(max(chi2, 0.0) / 2.0))
+
+
+def _mcnemar_pack(n_pairs: int, b: int, c: int, *, unit: str) -> dict:
+    n_disc = b + c
+    chi2, p_yates = mcnemar_yates_p(b, c)
+    p_exact = mcnemar_exact_p(b, c)
+    return {
+        "n_pairs": n_pairs,
+        "b": b,
+        "c": c,
+        "n_discordant": n_disc,
+        "chi2": chi2,
+        "p_value": p_exact,
+        "p_value_exact": p_exact,
+        "p_value_yates": p_yates,
+        "method": "exact_binomial",
+        "yates_note": "chi2 and p_value_yates use continuity-corrected McNemar",
+        "unit": unit,
+    }
+
+
 def mcnemar(rows_a: list[dict], rows_b: list[dict], field: str) -> dict:
     """
-    Exact-ish paired test between two gates on identical perception output.
+    Paired McNemar between two gates on identical perception output.
 
-    Only discordant pairs carry information, which is the whole point of pairing: the
-    variance from perception is differenced away.
+    Primary p-value is the two-sided exact binomial test on discordant pairs.
+    Yates-corrected chi-square is reported as ``p_value_yates``.
 
     Pairing key defaults to ``(frame_id, seed)``. Prefer :func:`mcnemar_frame_majority`
     for publication claims so multiple drift seeds on the same frame are not treated
@@ -494,30 +555,7 @@ def mcnemar(rows_a: list[dict], rows_b: list[dict], field: str) -> dict:
     shared = set(index_a) & set(index_b)
     b = sum(1 for k in shared if index_a[k] and not index_b[k])
     c = sum(1 for k in shared if index_b[k] and not index_a[k])
-    n_disc = b + c
-    if n_disc == 0:
-        return {
-            "n_pairs": len(shared),
-            "b": 0,
-            "c": 0,
-            "n_discordant": 0,
-            "chi2": 0.0,
-            "p_value": 1.0,
-            "unit": "frame_seed",
-        }
-    chi2 = (abs(b - c) - 1) ** 2 / n_disc  # Yates-corrected
-    from math import erfc, sqrt
-
-    p = erfc(sqrt(max(chi2, 0.0) / 2.0))
-    return {
-        "n_pairs": len(shared),
-        "b": b,
-        "c": c,
-        "n_discordant": n_disc,
-        "chi2": chi2,
-        "p_value": p,
-        "unit": "frame_seed",
-    }
+    return _mcnemar_pack(len(shared), b, c, unit="frame_seed")
 
 
 def mcnemar_frame_majority(rows_a: list[dict], rows_b: list[dict], field: str) -> dict:
@@ -539,30 +577,7 @@ def mcnemar_frame_majority(rows_a: list[dict], rows_b: list[dict], field: str) -
     shared = set(a) & set(bmap)
     b = sum(1 for k in shared if a[k] and not bmap[k])
     c = sum(1 for k in shared if bmap[k] and not a[k])
-    n_disc = b + c
-    if n_disc == 0:
-        return {
-            "n_pairs": len(shared),
-            "b": 0,
-            "c": 0,
-            "n_discordant": 0,
-            "chi2": 0.0,
-            "p_value": 1.0,
-            "unit": "frame_majority",
-        }
-    chi2 = (abs(b - c) - 1) ** 2 / n_disc
-    from math import erfc, sqrt
-
-    p = erfc(sqrt(max(chi2, 0.0) / 2.0))
-    return {
-        "n_pairs": len(shared),
-        "b": b,
-        "c": c,
-        "n_discordant": n_disc,
-        "chi2": chi2,
-        "p_value": p,
-        "unit": "frame_majority",
-    }
+    return _mcnemar_pack(len(shared), b, c, unit="frame_majority")
 
 
 def paired_tests(headline_rows: list[dict], gates: list[str]) -> dict:

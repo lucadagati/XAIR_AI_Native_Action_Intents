@@ -211,6 +211,7 @@ def evaluate_router(
     *,
     setting: dict,
     seed: int,
+    keep_trials: bool = False,
 ) -> dict:
     rng = random.Random(seed)
     scored_rows: list[dict] = []
@@ -239,7 +240,7 @@ def evaluate_router(
     agg = summarize(scored_rows)
     latencies.sort()
     p50 = latencies[len(latencies) // 2] if latencies else 0.0
-    return {
+    out = {
         "router": getattr(router, "name", getattr(router, "__name__", "router")),
         "setting": setting["label"],
         "p_drift": setting["p_drift"],
@@ -254,6 +255,18 @@ def evaluate_router(
         "summary": agg,
         "model_share": dict(model_counts),
     }
+    if keep_trials:
+        out["trials"] = [
+            {
+                "frame_id": r["frame_id"],
+                "reward": r["reward"],
+                "successful_actuation": bool(r.get("successful_actuation")),
+                "hazardous_publish": bool(r.get("hazardous_publish")),
+                "wrongful_revoke": bool(r.get("wrongful_revoke")),
+            }
+            for r in scored_rows
+        ]
+    return out
 
 
 def static_pareto(frames: dict[str, dict[str, ReplayRecord]]) -> list[dict]:
@@ -289,7 +302,7 @@ def static_pareto(frames: dict[str, dict[str, ReplayRecord]]) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="B4 latency-aware model routing")
     parser.add_argument("--tag", default="phase_p")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
+    parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
     parser.add_argument("--no-notify", action="store_true")
     args = parser.parse_args()
 
@@ -323,7 +336,16 @@ def main() -> int:
     for seed in args.seeds:
         for setting in VOLATILITY:
             for router in routers:
-                rows.append(evaluate_router(eval_frames, router, setting=setting, seed=seed))
+                rows.append(
+                    evaluate_router(
+                        eval_frames,
+                        router,
+                        setting=setting,
+                        seed=seed,
+                        keep_trials=setting["label"] == "p50",
+                    )
+                )
+                rows[-1]["seed"] = seed
 
     # Aggregate across seeds for each (router, setting)
     buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -351,6 +373,26 @@ def main() -> int:
     headline = [r for r in table if r["setting"] == "p50"]
     headline.sort(key=lambda r: r["utility"], reverse=True)
 
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    summary_path = RESULTS_DIR / "b4_model_routing.json"
+    table_path = RESULTS_DIR / "b4_routing_table.csv"
+    pareto_path = RESULTS_DIR / "b4_static_pareto.csv"
+    trials_path = RESULTS_DIR / "b4_eval_trials.jsonl"
+    with trials_path.open("w") as fh:
+        for r in rows:
+            for t in r.get("trials") or []:
+                fh.write(
+                    json.dumps(
+                        {
+                            "router": r["router"],
+                            "seed": r.get("seed"),
+                            "setting": r["setting"],
+                            **t,
+                        }
+                    )
+                    + "\n"
+                )
+    slim_rows = [{k: v for k, v in r.items() if k != "trials"} for r in rows]
     out = {
         "n_frames": len(frames),
         "split": {
@@ -365,10 +407,6 @@ def main() -> int:
         "table": table,
         "cost_weights": {"lambda_hazard": LAMBDA_HAZARD, "mu_wrongful_revoke": MU_WRONGFUL_REVOKE},
     }
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    summary_path = RESULTS_DIR / "b4_model_routing.json"
-    table_path = RESULTS_DIR / "b4_routing_table.csv"
-    pareto_path = RESULTS_DIR / "b4_static_pareto.csv"
     summary_path.write_text(json.dumps(out, indent=2))
 
     with table_path.open("w", newline="") as fh:

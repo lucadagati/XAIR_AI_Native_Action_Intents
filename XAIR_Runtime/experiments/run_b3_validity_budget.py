@@ -99,6 +99,7 @@ def run_online(
     epochs: int,
     seed: int,
     learn: bool,
+    privileged_severity: bool = False,
 ) -> dict:
     rng = random.Random(seed)
     order = list(range(len(pairs)))
@@ -113,8 +114,8 @@ def run_online(
             p_drift = rng.choice(P_DRIFT_TRAIN)
             offset = rng.choice(OFFSET_TRAIN_MS)
             invalid = sample_invalid(rec, rng, p_drift, offset)
-            feats = feature_vector(raw, rec)
-            state = discrete_state(raw, rec)
+            feats = feature_vector(raw, rec, privileged_severity=privileged_severity)
+            state = discrete_state(raw, rec, privileged_severity=privileged_severity)
             if isinstance(policy, FixedBudget):
                 action = policy.select()
             elif isinstance(policy, LinUCB):
@@ -131,9 +132,7 @@ def run_online(
                     policy.update(feats, action, r)
                 elif isinstance(policy, QLearning):
                     policy.update(feats, action, r, state)
-                # Fixed: no-op
 
-    # Learning curve: cumulative mean reward every 200 steps
     curve = []
     window = max(200, len(rewards) // 50)
     cum = 0.0
@@ -161,19 +160,20 @@ def eval_frozen(
     *,
     setting: dict,
     seed: int,
+    privileged_severity: bool = False,
+    keep_trials: bool = False,
 ) -> dict:
     rng = random.Random(seed + 17)
     scored_rows: list[dict] = []
     action_counts = defaultdict(int)
-    # freeze exploration for Q-learning
     old_eps = getattr(policy, "epsilon", None)
     if old_eps is not None:
         policy.epsilon = 0.0
 
     for rec, raw in pairs:
         invalid = sample_invalid(rec, rng, setting["p_drift"], setting["drift_offset_ms"])
-        feats = feature_vector(raw, rec)
-        state = discrete_state(raw, rec)
+        feats = feature_vector(raw, rec, privileged_severity=privileged_severity)
+        state = discrete_state(raw, rec, privileged_severity=privileged_severity)
         if isinstance(policy, FixedBudget):
             action = policy.select()
         elif isinstance(policy, LinUCB):
@@ -181,6 +181,7 @@ def eval_frozen(
         else:
             action = policy.select(feats, state)
         scored = apply_action(rec, action, invalid_at_submit=invalid, anchor="capture")
+        scored["frame_id"] = rec.frame_id
         scored_rows.append(scored)
         action_counts[action.name] += 1
 
@@ -188,7 +189,7 @@ def eval_frozen(
         policy.epsilon = old_eps
 
     agg = summarize(scored_rows)
-    return {
+    out = {
         "setting": setting["label"],
         "p_drift": setting["p_drift"],
         "drift_offset_ms": setting["drift_offset_ms"],
@@ -198,6 +199,18 @@ def eval_frozen(
         "summary": agg,
         "action_counts": dict(action_counts),
     }
+    if keep_trials:
+        out["trials"] = [
+            {
+                "frame_id": r["frame_id"],
+                "reward": r["reward"],
+                "successful_actuation": bool(r.get("successful_actuation")),
+                "hazardous_publish": bool(r.get("hazardous_publish")),
+                "wrongful_revoke": bool(r.get("wrongful_revoke")),
+            }
+            for r in scored_rows
+        ]
+    return out
 
 
 def run_oracle(
@@ -205,6 +218,7 @@ def run_oracle(
     *,
     setting: dict,
     seed: int,
+    keep_trials: bool = False,
 ) -> dict:
     rng = random.Random(seed + 99)
     scored_rows: list[dict] = []
@@ -212,10 +226,11 @@ def run_oracle(
     for rec, raw in pairs:
         invalid = sample_invalid(rec, rng, setting["p_drift"], setting["drift_offset_ms"])
         action, scored = oracle_action(rec, invalid_at_submit=invalid, anchor="capture")
+        scored["frame_id"] = rec.frame_id
         scored_rows.append(scored)
         action_counts[action.name] += 1
     agg = summarize(scored_rows)
-    return {
+    out = {
         "setting": setting["label"],
         "policy": "oracle",
         "mean_reward": sum(r["reward"] for r in scored_rows) / max(1, len(scored_rows)),
@@ -224,6 +239,73 @@ def run_oracle(
         "summary": agg,
         "action_counts": dict(action_counts),
     }
+    if keep_trials:
+        out["trials"] = [
+            {
+                "frame_id": r["frame_id"],
+                "reward": r["reward"],
+                "successful_actuation": bool(r.get("successful_actuation")),
+                "hazardous_publish": bool(r.get("hazardous_publish")),
+                "wrongful_revoke": bool(r.get("wrongful_revoke")),
+            }
+            for r in scored_rows
+        ]
+    return out
+
+
+def _strip_trials(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k != "trials"}
+
+
+def _aggregate_headline(eval_results: list[dict]) -> list[dict]:
+    headline = [r for r in eval_results if r.get("setting") == "headline"]
+    summary_table = []
+    for name in sorted({r["policy"] for r in headline}):
+        rows = [r for r in headline if r["policy"] == name]
+        summary_table.append(
+            {
+                "policy": name,
+                "mean_reward": sum(r["mean_reward"] for r in rows) / len(rows),
+                "utility": sum(r["utility_aggregate"] for r in rows) / len(rows),
+                "SAR": sum(r["summary"]["SAR"] for r in rows) / len(rows),
+                "hazard": sum(r["summary"]["hazardous_publish_rate"] for r in rows) / len(rows),
+                "WRR": sum(r["summary"]["WRR"] for r in rows) / len(rows),
+                "n_seeds": len(rows),
+                "privileged": bool(rows[0].get("privileged")),
+                "role": rows[0].get("role", "other"),
+            }
+        )
+    summary_table.sort(key=lambda r: r["utility"], reverse=True)
+    return summary_table
+
+
+def _eval_policy_all_settings(
+    policy,
+    *,
+    test_pairs,
+    seed: int,
+    policy_name: str,
+    privileged: bool,
+    role: str,
+) -> list[dict]:
+    rows = []
+    for setting in EVAL_SETTINGS:
+        keep = setting["label"] == "headline"
+        ev = eval_frozen(
+            test_pairs,
+            policy,
+            setting=setting,
+            seed=seed,
+            privileged_severity=privileged,
+            keep_trials=keep,
+        )
+        ev["policy"] = policy_name
+        ev["seed"] = seed
+        ev["split"] = "test"
+        ev["privileged"] = privileged
+        ev["role"] = role
+        rows.append(ev)
+    return rows
 
 
 def main() -> int:
@@ -232,6 +314,12 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
     parser.add_argument("--limit", type=int, default=None, help="cap records for smoke tests")
+    parser.add_argument(
+        "--privileged-severity",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="also train LinUCB/Q with GT severity one-hots (ablation only; default on)",
+    )
     parser.add_argument("--no-notify", action="store_true")
     args = parser.parse_args()
 
@@ -254,10 +342,11 @@ def main() -> int:
         print("[b3] empty train or test split", file=sys.stderr)
         return 1
 
-    n_feat = len(feature_vector(train_pairs[0][1], train_pairs[0][0]))
+    n_feat = len(feature_vector(train_pairs[0][1], train_pairs[0][0], privileged_severity=False))
+    n_feat_priv = len(feature_vector(train_pairs[0][1], train_pairs[0][0], privileged_severity=True))
     print(
         f"[b3] {len(pairs)} decisions (train={len(train_pairs)} test={len(test_pairs)}), "
-        f"feature_dim={n_feat}, actions={len(ACTIONS)}",
+        f"feature_dim={n_feat} priv={n_feat_priv}, actions={len(ACTIONS)}",
         flush=True,
     )
     notifier.send(
@@ -265,87 +354,130 @@ def main() -> int:
         f"train={len(train_pairs)} test={len(test_pairs)} × {args.epochs} epochs"
     )
 
-    fixed_actions = [
-        BudgetAction(500, "lenient"),
-        BudgetAction(500, "strict"),
-        BudgetAction(2000, "strict"),
-        BudgetAction(4000, "strict"),
-    ]
-
     train_results = []
     eval_results = []
     curves = []
+    best_fixed_by_seed: dict[int, dict] = {}
 
     for seed in args.seeds:
         print(f"[b3] seed={seed}", flush=True)
-        policies = [
-            FixedBudget(a) for a in fixed_actions
-        ] + [
-            LinUCB(n_feat, alpha=1.0),
-            QLearning(epsilon=0.15, alpha=0.25, gamma=0.0, seed=seed),
-        ]
 
-        for policy in policies:
-            learn = not isinstance(policy, FixedBudget)
-            policy_name = getattr(policy, "name", type(policy).__name__)
-            if not isinstance(policy, FixedBudget):
-                online = run_online(
-                    train_pairs, policy, epochs=args.epochs, seed=seed, learn=learn
+        # All 10 fixed actions: score on train, freeze best, report all on test.
+        train_fixed_u: list[tuple[float, BudgetAction, FixedBudget]] = []
+        for action in ACTIONS:
+            policy = FixedBudget(action)
+            train_ev = eval_frozen(
+                train_pairs,
+                policy,
+                setting=EVAL_SETTINGS[0],
+                seed=seed,
+                privileged_severity=False,
+                keep_trials=False,
+            )
+            train_fixed_u.append((train_ev["mean_reward"], action, policy))
+            train_ev["policy"] = policy.name
+            train_ev["seed"] = seed
+            train_ev["split"] = "train"
+            train_ev["privileged"] = False
+            train_ev["role"] = "fixed"
+            train_results.append(train_ev)
+            eval_results.extend(
+                _eval_policy_all_settings(
+                    policy,
+                    test_pairs=test_pairs,
+                    seed=seed,
+                    policy_name=policy.name,
+                    privileged=False,
+                    role="fixed",
                 )
-                online["seed"] = seed
-                online["split"] = "train"
-                train_results.append(online)
-                policy_name = online["policy"]
-                for pt in online["learning_curve"]:
-                    curves.append(
-                        {
-                            "seed": seed,
-                            "policy": policy_name,
-                            "step": pt["step"],
-                            "mean_reward": pt["mean_reward"],
-                        }
-                    )
-            for setting in EVAL_SETTINGS:
-                ev = eval_frozen(test_pairs, policy, setting=setting, seed=seed)
-                ev["policy"] = policy_name
-                ev["seed"] = seed
-                ev["split"] = "test"
-                eval_results.append(ev)
+            )
+
+        train_fixed_u.sort(key=lambda t: t[0], reverse=True)
+        best_u, best_action, best_policy = train_fixed_u[0]
+        best_fixed_by_seed[seed] = {
+            "action": best_action.name,
+            "train_mean_reward": best_u,
+        }
+        eval_results.extend(
+            _eval_policy_all_settings(
+                best_policy,
+                test_pairs=test_pairs,
+                seed=seed,
+                policy_name="best_fixed:train_selected",
+                privileged=False,
+                role="best_fixed",
+            )
+        )
+
+        learners = [
+            (LinUCB(n_feat, alpha=1.0), False, "learned"),
+            (QLearning(epsilon=0.15, alpha=0.25, gamma=0.0, seed=seed), False, "learned"),
+        ]
+        if args.privileged_severity:
+            lin_priv = LinUCB(n_feat_priv, alpha=1.0)
+            lin_priv.name = "linucb:priv"
+            q_priv = QLearning(epsilon=0.15, alpha=0.25, gamma=0.0, seed=seed)
+            q_priv.name = "qlearn:priv"
+            learners.extend(
+                [
+                    (lin_priv, True, "privileged"),
+                    (q_priv, True, "privileged"),
+                ]
+            )
+
+        for policy, priv, role in learners:
+            online = run_online(
+                train_pairs,
+                policy,
+                epochs=args.epochs,
+                seed=seed,
+                learn=True,
+                privileged_severity=priv,
+            )
+            online["seed"] = seed
+            online["split"] = "train"
+            online["privileged"] = priv
+            online["role"] = role
+            train_results.append(online)
+            policy_name = online["policy"]
+            for pt in online["learning_curve"]:
+                curves.append(
+                    {
+                        "seed": seed,
+                        "policy": policy_name,
+                        "step": pt["step"],
+                        "mean_reward": pt["mean_reward"],
+                        "privileged": priv,
+                    }
+                )
+            eval_results.extend(
+                _eval_policy_all_settings(
+                    policy,
+                    test_pairs=test_pairs,
+                    seed=seed,
+                    policy_name=policy_name,
+                    privileged=priv,
+                    role=role,
+                )
+            )
 
         for setting in EVAL_SETTINGS:
-            ora = run_oracle(test_pairs, setting=setting, seed=seed)
+            keep = setting["label"] == "headline"
+            ora = run_oracle(test_pairs, setting=setting, seed=seed, keep_trials=keep)
             ora["seed"] = seed
             ora["split"] = "test"
+            ora["privileged"] = False
+            ora["role"] = "oracle"
             eval_results.append(ora)
 
-    # Aggregate eval across seeds for headline setting
-    by_policy: dict[str, list] = defaultdict(list)
-    for row in eval_results:
-        if row.get("setting") == "headline" or row.get("setting") == "headline":
-            by_policy[row["policy"]].append(row)
-    # fix: oracle has setting headline too
-    headline = [r for r in eval_results if r.get("setting") == "headline"]
-    summary_table = []
-    policies_seen = sorted({r["policy"] for r in headline})
-    for name in policies_seen:
-        rows = [r for r in headline if r["policy"] == name]
-        mean_u = sum(r["utility_aggregate"] for r in rows) / len(rows)
-        mean_r = sum(r["mean_reward"] for r in rows) / len(rows)
-        mean_sar = sum(r["summary"]["SAR"] for r in rows) / len(rows)
-        mean_hazard = sum(r["summary"]["hazardous_publish_rate"] for r in rows) / len(rows)
-        mean_wrr = sum(r["summary"]["WRR"] for r in rows) / len(rows)
-        summary_table.append(
-            {
-                "policy": name,
-                "mean_reward": mean_r,
-                "utility": mean_u,
-                "SAR": mean_sar,
-                "hazard": mean_hazard,
-                "WRR": mean_wrr,
-                "n_seeds": len(rows),
-            }
-        )
-    summary_table.sort(key=lambda r: r["utility"], reverse=True)
+    summary_table = _aggregate_headline(eval_results)
+    headline_compact = [
+        r
+        for r in summary_table
+        if r["role"] in {"oracle", "learned", "best_fixed"} and not r["privileged"]
+    ]
+    all_fixed_table = [r for r in summary_table if r["role"] == "fixed"]
+    privileged_table = [r for r in summary_table if r["privileged"]]
 
     out_dir = RESULTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -354,7 +486,29 @@ def main() -> int:
         "eval_csv": out_dir / "b3_eval.csv",
         "curve_csv": out_dir / "b3_learning_curves.csv",
         "table_csv": out_dir / "b3_headline_table.csv",
+        "fixed_csv": out_dir / "b3_all_fixed_table.csv",
+        "trials": out_dir / "b3_eval_trials.jsonl",
     }
+    trial_count = 0
+    with paths["trials"].open("w") as fh:
+        for r in eval_results:
+            for t in r.get("trials") or []:
+                fh.write(
+                    json.dumps(
+                        {
+                            "policy": r["policy"],
+                            "seed": r["seed"],
+                            "setting": r.get("setting"),
+                            "role": r.get("role"),
+                            "privileged": r.get("privileged", False),
+                            **t,
+                        }
+                    )
+                    + "\n"
+                )
+                trial_count += 1
+
+    eval_slim = [_strip_trials(r) for r in eval_results]
     payload = {
         "cache_tag": args.tag,
         "n_decisions": len(pairs),
@@ -366,44 +520,73 @@ def main() -> int:
         "epochs": args.epochs,
         "seeds": args.seeds,
         "actions": [a.name for a in ACTIONS],
+        "feature_dim": n_feat,
+        "feature_dim_privileged": n_feat_priv,
+        "privileged_severity_run": bool(args.privileged_severity),
         "cost_weights": {"lambda_hazard": LAMBDA_HAZARD, "mu_wrongful_revoke": MU_WRONGFUL_REVOKE},
-        "headline_table": summary_table,
-        "eval": eval_results,
+        "best_fixed_by_seed": best_fixed_by_seed,
+        "headline_table": headline_compact,
+        "all_fixed_table": all_fixed_table,
+        "privileged_table": privileged_table,
+        "all_policies_table": summary_table,
+        "eval": eval_slim,
         "train": [
             {k: v for k, v in t.items() if k != "learning_curve"}
             for t in train_results
         ],
+        "n_eval_trials": trial_count,
     }
     paths["summary"].write_text(json.dumps(payload, indent=2, default=str))
 
-    if eval_results:
-        fields = sorted({k for r in eval_results for k in r if k != "summary"})
-        # flatten summary metrics
+    if eval_slim:
         flat = []
-        for r in eval_results:
+        for r in eval_slim:
             row = {k: v for k, v in r.items() if k != "summary" and k != "action_counts"}
             for mk, mv in r.get("summary", {}).items():
                 if isinstance(mv, (int, float)):
                     row[f"sum_{mk}"] = mv
             flat.append(row)
+        fields = sorted({k for row in flat for k in row})
         with paths["eval_csv"].open("w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=sorted(flat[0].keys()))
+            w = csv.DictWriter(fh, fieldnames=fields)
             w.writeheader()
             w.writerows(flat)
 
     if curves:
         with paths["curve_csv"].open("w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=["seed", "policy", "step", "mean_reward"])
+            w = csv.DictWriter(
+                fh, fieldnames=["seed", "policy", "step", "mean_reward", "privileged"]
+            )
             w.writeheader()
             w.writerows(curves)
 
     with paths["table_csv"].open("w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(summary_table[0].keys()))
+        fields = list(headline_compact[0].keys()) if headline_compact else list(summary_table[0].keys())
+        w = csv.DictWriter(fh, fieldnames=fields)
         w.writeheader()
-        w.writerows(summary_table)
+        w.writerows(headline_compact or summary_table)
 
-    print(json.dumps({"headline_table": summary_table, "paths": {k: str(v) for k, v in paths.items()}}, indent=2))
-    best = summary_table[0]
+    if all_fixed_table:
+        with paths["fixed_csv"].open("w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(all_fixed_table[0].keys()))
+            w.writeheader()
+            w.writerows(all_fixed_table)
+
+    print(
+        json.dumps(
+            {
+                "headline_table": headline_compact,
+                "all_fixed_table": all_fixed_table,
+                "privileged_table": privileged_table,
+                "best_fixed_by_seed": best_fixed_by_seed,
+                "paths": {k: str(v) for k, v in paths.items()},
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    ranked = headline_compact or summary_table
+    best = ranked[0]
     notifier.send(
         f"OK B3 validity budget\n"
         f"best={best['policy']} U={best['utility']:.3f} "

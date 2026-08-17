@@ -610,14 +610,20 @@ def plot_b3_policy_comparison(table_csv: Path, dest: Path) -> None:
     rows = list(csv.DictReader(table_csv.open()))
     if not rows:
         return
-    # Keep oracle, learners, and two representative fixed baselines.
+    # Keep oracle, learners, and train-selected best fixed.
     keep = []
     for r in rows:
         p = r["policy"]
-        if p in ("oracle", "linucb:a1.0", "qlearn:e0.15", "fixed:w500_strict", "fixed:w2000_strict"):
+        if p in ("oracle", "linucb:a1.0", "qlearn:e0.15", "best_fixed:train_selected"):
             keep.append(r)
     keep.sort(key=lambda r: float(r["utility"]), reverse=True)
-    labels = [r["policy"].replace("fixed:", "").replace("linucb:a1.0", "LinUCB").replace("qlearn:e0.15", "Q-learning") for r in keep]
+    labels = [
+        r["policy"]
+        .replace("best_fixed:train_selected", "Best-fixed")
+        .replace("linucb:a1.0", "LinUCB")
+        .replace("qlearn:e0.15", "Q-learning")
+        for r in keep
+    ]
     utils = [float(r["utility"]) for r in keep]
     colors = []
     for r in keep:
@@ -703,15 +709,12 @@ def plot_b5_policy_comparison(headline_csv: Path, dest: Path) -> None:
     # Prefer a stable display order.
     prefer = [
         "oracle",
-        "single_shot",
-        "retry_stale",
-        "always_reobserve",
-        "always_escalate",
-        "linucb:a0.75",
         "qlearn:e0.1",
+        "single_shot",
+        "always_reobserve",
     ]
     by = {r["policy"]: r for r in rows}
-    order = [p for p in prefer if p in by] + [p for p in by if p not in prefer]
+    order = [p for p in prefer if p in by]
     labels = {
         "oracle": "Oracle",
         "single_shot": "Single-shot",
@@ -735,7 +738,7 @@ def plot_b5_policy_comparison(headline_csv: Path, dest: Path) -> None:
     axes[0].set_xticks(xs)
     axes[0].set_xticklabels(names, rotation=35, ha="right", fontsize=8)
     axes[0].set_ylabel("Utility $U$")
-    axes[0].set_title("B5 post-revocation policies")
+    axes[0].set_title("B5 post-revocation policy simulation")
     # Legend markers instead of overlapping point labels.
     markers = ["o", "s", "^", "D", "v", "P", "X"]
     for i, p in enumerate(order):
