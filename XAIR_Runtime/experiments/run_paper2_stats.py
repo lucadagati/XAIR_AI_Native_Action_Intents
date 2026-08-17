@@ -88,7 +88,10 @@ def mcnemar_reported(
         "discordant_rate_psi": psi,
         "chi2": float(raw["chi2"]),
         "p_value": p,
+        "p_value_exact": float(raw.get("p_value_exact", p)),
+        "p_value_yates": float(raw.get("p_value_yates", p)),
         "p_value_fmt": format_p_value(p),
+        "method": raw.get("method", "exact_binomial"),
         "unit": raw.get("unit", "frame_majority" if clustered else "frame_seed"),
     }
 
@@ -236,7 +239,7 @@ def mcnemar_at_ops(records: list[ReplayRecord], *, seeds: tuple[int, ...] = SEED
 
 
 def power_from_mcnemar(mcnemar_ops: dict) -> dict:
-    """McNemar power / required discordant pairs from observed tests at w=4000."""
+    """Planning quantities from discordant pairs. Does not report post-hoc observed power."""
     ref = mcnemar_ops.get("w4000", {})
     key = "direct_vs_xair:successful_actuation"
     obs = ref.get(key, {})
@@ -245,7 +248,6 @@ def power_from_mcnemar(mcnemar_ops: dict) -> dict:
     p_alt = b / n_disc if n_disc else 0.5
     psi = float(obs.get("discordant_rate_psi", 0.0))
     req_5pp = mcnemar_required_discordant(0.55)
-    req_obs_effect = mcnemar_required_discordant(p_alt) if n_disc else None
     return {
         "test_reference": f"w4000/{key}",
         "unit": obs.get("unit", "frame_majority"),
@@ -254,15 +256,13 @@ def power_from_mcnemar(mcnemar_ops: dict) -> dict:
         "observed_c": c,
         "discordant_rate_psi": psi,
         "p_alt_b_over_discordant": p_alt,
-        "observed_power_at_discordant": mcnemar_power(n_disc, p_alt) if n_disc else None,
         "required_discordant_pairs_80_power_5pp_effect": req_5pp,
-        "required_discordant_pairs_80_power_observed_effect": req_obs_effect,
         "alpha": 0.05,
         "power_target": 0.8,
         "note": (
-            "Primary McNemar units are frames (majority over seeds). "
-            "Power uses discordant pairs, not independent proportions. "
-            "Planning example uses |p_alt-0.5|=0.05 on discordant wins."
+            "Primary McNemar is the two-sided exact binomial test on frame-majority "
+            "discordant pairs; Yates chi-square is secondary. Post-hoc observed power "
+            "is not reported. Planning example uses |p_alt-0.5|=0.05 on discordant wins."
         ),
     }
 
@@ -306,6 +306,112 @@ def paired_seed_contrast(
 
 
 def load_csv_trials(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    rows = []
+    with path.open() as fh:
+        for r in csv.DictReader(fh):
+            for k, v in list(r.items()):
+                if v in ("True", "true", "1"):
+                    r[k] = True
+                elif v in ("False", "false", "0"):
+                    r[k] = False
+                else:
+                    try:
+                        if v is not None and v != "" and "." in v:
+                            r[k] = float(v)
+                        elif v is not None and v.isdigit():
+                            r[k] = int(v)
+                    except ValueError:
+                        pass
+            rows.append(r)
+    return rows
+
+
+def load_jsonl_trials(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        rows.append(json.loads(line))
+    return rows
+
+
+def b1_paired_blind_leaky(*, n_boot: int, seed: int) -> dict:
+    """Paired McNemar + bootstrap CI on leaky−blind grounding accuracy (same frames)."""
+    from experiments.run_b2_validity_frontier import mcnemar_exact_p, mcnemar_yates_p
+
+    csv_path = RESULTS_DIR / "b1_grounding.csv"
+    rows = load_csv_trials(csv_path)
+    blind = {
+        str(r["frame_id"]): bool(r["grounding_correct"])
+        for r in rows
+        if r.get("model") == HEADLINE["model"] and r.get("prompt_variant") == "blind"
+    }
+    leaky = {
+        str(r["frame_id"]): bool(r["grounding_correct"])
+        for r in rows
+        if r.get("model") == HEADLINE["model"] and r.get("prompt_variant") == "leaky"
+    }
+    shared = sorted(set(blind) & set(leaky))
+    if not shared:
+        return {"n_frames": 0}
+    b = sum(1 for f in shared if leaky[f] and not blind[f])  # leaky-only correct
+    c = sum(1 for f in shared if blind[f] and not leaky[f])
+    chi2, p_yates = mcnemar_yates_p(b, c)
+    p_exact = mcnemar_exact_p(b, c)
+    acc_b = [1.0 if blind[f] else 0.0 for f in shared]
+    acc_l = [1.0 if leaky[f] else 0.0 for f in shared]
+    diffs = [lb - bb for lb, bb in zip(acc_l, acc_b)]
+    point = sum(diffs) / len(diffs)
+    rng = random.Random(seed)
+    n = len(diffs)
+    boots = []
+    for _ in range(n_boot):
+        sample = [diffs[rng.randrange(n)] for _ in range(n)]
+        boots.append(sum(sample) / n)
+    boots.sort()
+    return {
+        "n_frames": len(shared),
+        "blind_accuracy": sum(acc_b) / n,
+        "leaky_accuracy": sum(acc_l) / n,
+        "delta_leaky_minus_blind": point,
+        "delta_ci95": [boots[int(0.025 * (n_boot - 1))], boots[int(0.975 * (n_boot - 1))]],
+        "mcnemar": {
+            "b_leaky_only_correct": b,
+            "c_blind_only_correct": c,
+            "n_discordant": b + c,
+            "p_value": p_exact,
+            "p_value_exact": p_exact,
+            "p_value_yates": p_yates,
+            "chi2_yates": chi2,
+            "method": "exact_binomial",
+            "unit": "frame",
+        },
+        "n_boot": n_boot,
+        "note": "Paired on the same 2,000 frames (primary 7B model).",
+    }
+
+
+def bootstrap_from_jsonl(
+    trials: list[dict],
+    *,
+    policy_key: str,
+    policies: list[str] | None = None,
+    n_boot: int,
+    seed: int,
+) -> dict:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for t in trials:
+        name = str(t.get(policy_key) or t.get("policy") or t.get("router") or "")
+        if policies is not None and name not in policies:
+            continue
+        grouped[name].append(t)
+    return {
+        k: bootstrap_utility_frames(vs, n_boot=n_boot, seed=seed) for k, vs in grouped.items()
+    }
     if not path.is_file():
         return []
     rows = []
@@ -384,6 +490,9 @@ def main() -> int:
         },
     }
 
+    print("[stats] B1 paired blind vs leaky...", flush=True)
+    out["b1_paired_blind_leaky"] = b1_paired_blind_leaky(n_boot=args.n_boot, seed=args.seed)
+
     print("[stats] McNemar at informative w (all seeds)...", flush=True)
     out["mcnemar_ops"] = mcnemar_at_ops(records_test if records_test else records_all)
     out["mcnemar_frame_set"] = "test" if records_test else "all"
@@ -392,14 +501,24 @@ def main() -> int:
     w = HEADLINE["freshness_ms"]
     boot_records = records_test if records_test else records_all
     b2_boot = {}
+    b2_rates = {}
     for gate in GATES:
         trials = generate_trials(boot_records, gate=gate, freshness_ms=w)
         b2_boot[gate] = bootstrap_utility_frames(trials, n_boot=args.n_boot, seed=args.seed)
+        known = [t for t in trials if not t.get("unknown")]
+        n = max(1, len(known))
+        b2_rates[gate] = {
+            "SAR": sum(1 for t in known if t.get("successful_actuation")) / n,
+            "hazard": sum(1 for t in known if t.get("hazardous_publish")) / n,
+            "WRR": sum(1 for t in known if t.get("wrongful_revoke")) / n,
+            "n_trials": len(trials),
+        }
     out["b2_bootstrap"] = {
         "freshness_ms": w,
         "frame_set": out["mcnemar_frame_set"],
         "gates": b2_boot,
     }
+    out["b2_headline_rates"] = b2_rates
 
     b2_sum = RESULTS_DIR / "b2_validity_frontier.json"
     if b2_sum.is_file():
@@ -459,7 +578,44 @@ def main() -> int:
                 for k, xs in by_pol.items()
             }
 
-    # Paired seed contrasts (n=5): report Δ with seed-bootstrap CI; do not overclaim.
+    print("[stats] Frame-cluster bootstrap B3–B5...", flush=True)
+    b3_trials = load_jsonl_trials(RESULTS_DIR / "b3_eval_trials.jsonl")
+    if b3_trials:
+        headline_b3 = [
+            t
+            for t in b3_trials
+            if t.get("setting") == "headline"
+            and not t.get("privileged")
+            and t.get("role") in {None, "learned", "best_fixed", "oracle", "fixed"}
+        ]
+        # Prefer named headline roles when present.
+        named = [t for t in headline_b3 if t.get("policy") in {
+            "oracle", "linucb:a1.0", "qlearn:e0.15", "best_fixed:train_selected"
+        } or str(t.get("policy", "")).startswith("fixed:")]
+        out["b3_frame_bootstrap"] = bootstrap_from_jsonl(
+            named or headline_b3,
+            policy_key="policy",
+            n_boot=args.n_boot,
+            seed=args.seed,
+        )
+    b4_trials = load_jsonl_trials(RESULTS_DIR / "b4_eval_trials.jsonl")
+    if b4_trials:
+        out["b4_frame_bootstrap"] = bootstrap_from_jsonl(
+            [t for t in b4_trials if t.get("setting") == "p50"],
+            policy_key="router",
+            n_boot=args.n_boot,
+            seed=args.seed,
+        )
+    b5_trials = load_jsonl_trials(RESULTS_DIR / "b5_eval_trials.jsonl")
+    if b5_trials:
+        out["b5_frame_bootstrap"] = bootstrap_from_jsonl(
+            [t for t in b5_trials if t.get("setting") == "headline"],
+            policy_key="policy",
+            n_boot=args.n_boot,
+            seed=args.seed,
+        )
+
+    # Paired seed contrasts (n=5): robustness note; primary CIs are frame-clustered.
     b3_by: dict[str, list[dict]] = defaultdict(list)
     for r in load_csv_trials(RESULTS_DIR / "b3_eval.csv"):
         if r.get("setting") != "headline" or "seed" not in r:
@@ -479,7 +635,7 @@ def main() -> int:
             b5_by[str(r["policy"])].append(r)
     out["paired_seed_contrasts"] = {
         "b3_linucb_vs_best_fixed": paired_seed_contrast(
-            b3_by, "linucb:a1.0", "fixed:w500_strict", n_boot=args.n_boot
+            b3_by, "linucb:a1.0", "best_fixed:train_selected", n_boot=args.n_boot
         ),
         "b5_qlearn_vs_single_shot": paired_seed_contrast(
             b5_by, "qlearn:e0.1", "single_shot", n_boot=args.n_boot
@@ -488,8 +644,8 @@ def main() -> int:
             b5_by, "always_reobserve", "single_shot", n_boot=args.n_boot
         ),
         "note": (
-            "Paired differences across five seeds; CI from seed-level bootstrap. "
-            "With n_seeds=5, intervals are coarse—overlapping hazard rates do not establish superiority."
+            "Seed-level paired differences are a robustness check (n_seeds=5). "
+            "Primary U intervals resample frame_id with seeds kept together in the cluster."
         ),
     }
 

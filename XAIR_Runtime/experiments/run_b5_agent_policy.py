@@ -124,6 +124,22 @@ def frame_id_from_frame(frame: dict[str, ReplayRecord]) -> str:
     return next(iter(frame.values())).frame_id
 
 
+def compact_trials(rows: list[dict], *, policy: str) -> list[dict]:
+    return [
+        {
+            "policy": policy,
+            "seed": r["seed"],
+            "setting": r.get("setting"),
+            "frame_id": r["frame_id"],
+            "reward": r.get("reward", r.get("total_reward")),
+            "successful_actuation": bool(r.get("successful_actuation")),
+            "hazardous_publish": bool(r.get("hazardous_publish")),
+            "wrongful_revoke": bool(r.get("wrongful_revoke")),
+        }
+        for r in rows
+    ]
+
+
 def aggregate_episodes(rows: list[dict]) -> dict:
     n = len(rows)
     if n == 0:
@@ -179,6 +195,8 @@ def run_policy_on_frames(
         )
         ep["setting"] = setting["label"]
         ep["seed"] = seed
+        ep["frame_id"] = frame_id_from_frame(models)
+        ep["reward"] = ep["total_reward"]
         rows.append(ep)
         if train_updates and hasattr(choose_action, "update"):
             choose_action.update(ep["total_reward"])
@@ -229,6 +247,7 @@ def main() -> int:
     table_rows: list[dict] = []
     learning_curves: list[dict] = []
     headline_detail: dict[str, list] = {}
+    headline_trials: list[dict] = []
 
     for setting in EVAL_SETTINGS:
         for seed in SEEDS:
@@ -245,8 +264,10 @@ def main() -> int:
                 agg = aggregate_episodes(rows)
                 agg.update({"policy": name, "setting": setting["label"], "seed": seed})
                 table_rows.append(agg)
-                if setting["label"] == "headline" and seed == SEEDS[0]:
-                    headline_detail[name] = rows
+                if setting["label"] == "headline":
+                    headline_trials.extend(compact_trials(rows, policy=name))
+                    if seed == SEEDS[0]:
+                        headline_detail[name] = rows
 
             # Q-learning: train on train frames, evaluate frozen on test
             q = AgentQLearning(epsilon=0.1, alpha=0.25, seed=seed)
@@ -286,8 +307,10 @@ def main() -> int:
             agg = aggregate_episodes(eval_rows)
             agg.update({"policy": q.name, "setting": setting["label"], "seed": seed})
             table_rows.append(agg)
-            if setting["label"] == "headline" and seed == SEEDS[0]:
-                headline_detail[q.name] = eval_rows
+            if setting["label"] == "headline":
+                headline_trials.extend(compact_trials(eval_rows, policy=q.name))
+                if seed == SEEDS[0]:
+                    headline_detail[q.name] = eval_rows
 
             # LinUCB: train on train, evaluate frozen on test
             lin = AgentLinUCB(len(dummy_feats), alpha=0.75)
@@ -323,8 +346,10 @@ def main() -> int:
             agg = aggregate_episodes(eval_rows)
             agg.update({"policy": lin.name, "setting": setting["label"], "seed": seed})
             table_rows.append(agg)
-            if setting["label"] == "headline" and seed == SEEDS[0]:
-                headline_detail[lin.name] = eval_rows
+            if setting["label"] == "headline":
+                headline_trials.extend(compact_trials(eval_rows, policy=lin.name))
+                if seed == SEEDS[0]:
+                    headline_detail[lin.name] = eval_rows
 
     # Mean over seeds for each policy × setting
     grouped: dict[tuple, list] = defaultdict(list)
@@ -391,6 +416,11 @@ def main() -> int:
     }
     json_path = RESULTS_DIR / "b5_agent_policy.json"
     json_path.write_text(json.dumps(out, indent=2))
+
+    trials_path = RESULTS_DIR / "b5_eval_trials.jsonl"
+    with trials_path.open("w") as fh:
+        for t in headline_trials:
+            fh.write(json.dumps(t) + "\n")
 
     print(json.dumps({"out": str(json_path), "headline_top": headline[:6]}, indent=2))
     notifier.send(f"B5 done: {len(frames)} frames, best={headline[0]['policy']} U={headline[0]['utility']:.3f}")

@@ -56,12 +56,22 @@ def instantaneous_reward(scored: dict) -> float:
     return trial_reward(scored)
 
 
-def feature_vector(raw: dict[str, Any], rec: ReplayRecord) -> list[float]:
-    """Context features available at emission time (no ground-truth labels)."""
+def feature_vector(
+    raw: dict[str, Any],
+    rec: ReplayRecord,
+    *,
+    privileged_severity: bool = False,
+) -> list[float]:
+    """
+    Features available at emission.
+
+    Headline features exclude mask-derived ground-truth severity. Use-case is the
+    known cell identity. ``defect_hat`` is the VLM's own defect judgement.
+    ``privileged_severity`` re-adds GT severity one-hots for a leakage ablation.
+    """
     lat = max(0.0, float(rec.latency_ms))
     conf = float(raw.get("confidence") or 0.0)
     n_pre = float(rec.n_preconditions)
-    sev = str(rec.severity or "none")
     uc = str(rec.use_case or "uc1_triage")
     model = str(rec.model or "")
     defect_hat = 1.0 if raw.get("defect_judgement") else 0.0
@@ -75,17 +85,24 @@ def feature_vector(raw: dict[str, Any], rec: ReplayRecord) -> list[float]:
         schema,
         defect_hat,
     ]
-    for level in SEVERITY_LEVELS:
-        feats.append(1.0 if sev == level else 0.0)
     for use in USE_CASES:
         feats.append(1.0 if uc == use else 0.0)
     for m in MODELS:
         feats.append(1.0 if model == m else 0.0)
+    if privileged_severity:
+        sev = str(rec.severity or "none")
+        for level in SEVERITY_LEVELS:
+            feats.append(1.0 if sev == level else 0.0)
     return feats
 
 
-def discrete_state(raw: dict[str, Any], rec: ReplayRecord) -> tuple:
-    """Coarse state for tabular Q-learning."""
+def discrete_state(
+    raw: dict[str, Any],
+    rec: ReplayRecord,
+    *,
+    privileged_severity: bool = False,
+) -> tuple:
+    """Coarse state for tabular Q-learning (headline: no GT severity)."""
     lat = float(rec.latency_ms)
     if lat < 2000:
         bucket = "lt2"
@@ -95,10 +112,11 @@ def discrete_state(raw: dict[str, Any], rec: ReplayRecord) -> tuple:
         bucket = "4to8"
     else:
         bucket = "ge8"
-    sev = str(rec.severity or "none")
     model = str(rec.model or "unknown")
     defect_hat = "def" if raw.get("defect_judgement") else "ok"
-    return (bucket, sev, model, defect_hat)
+    if privileged_severity:
+        return (bucket, str(rec.severity or "none"), model, defect_hat)
+    return (bucket, model, defect_hat)
 
 
 def apply_action(

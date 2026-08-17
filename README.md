@@ -97,7 +97,7 @@ Key design choices documented in `docs/VISION.md`:
 - **Evidence anchoring**: freshness measured from capture time, not model emission
 - **Stochastic drift**: plant volatility as a controlled experimental factor
 - **Blind prompts**: no label leakage; leaky control for ablation only
-- **Learned validity budget**: RL/bandit policies over freshness windows (Phase RL, in progress)
+- **Learned validity budget**: RL/bandit policies over freshness windows (Phase RL; B3–B5 offline on the Phase-P cache)
 
 ## Tests
 

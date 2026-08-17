@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.paper2_common import RESULTS_DIR  # noqa: E402
+from experiments.paper2_common import LAMBDA_HAZARD, MU_WRONGFUL_REVOKE, RESULTS_DIR  # noqa: E402
 
 LAMBDAS = (1.0, 5.0, 10.0)
 MUS = (0.5, 1.0, 2.0)
@@ -26,6 +26,35 @@ MUS = (0.5, 1.0, 2.0)
 
 def u(sar: float, hazard: float, wrr: float, lam: float, mu: float) -> float:
     return sar - lam * hazard - mu * wrr
+
+
+def trial_wrr(sar: float, hazard: float, reported_wrr: float, mean_reward: float | None) -> float:
+    """Prefer trial-level wrongful-revoke rate inverted from mean reward at default (λ,μ)."""
+    if mean_reward is None:
+        return reported_wrr
+    return sar - LAMBDA_HAZARD * hazard - mean_reward
+
+
+def rank_suite(suite_out: list[dict]) -> dict:
+    rankings = {}
+    for lam in LAMBDAS:
+        for mu in MUS:
+            ordered = sorted(suite_out, key=lambda x: -u(x["SAR"], x["hazard"], x["WRR"], lam, mu))
+            rankings[f"l{lam}_m{mu}"] = [x["name"] for x in ordered]
+    baseline = rankings.get("l5.0_m1.0", [])
+    kendallish = {}
+    for key, order in rankings.items():
+        if not baseline:
+            continue
+        pos_b = {n: i for i, n in enumerate(baseline)}
+        agree = total = 0
+        for i, a in enumerate(order):
+            for b in order[i + 1 :]:
+                total += 1
+                if pos_b[a] < pos_b[b]:
+                    agree += 1
+        kendallish[key] = agree / total if total else 1.0
+    return {"policies": suite_out, "rankings": rankings, "rank_agreement_vs_default": kendallish}
 
 
 def load_rows(path: Path) -> list[dict]:
@@ -41,11 +70,29 @@ def main() -> int:
     del args
 
     sources = {
-        "b3": (RESULTS_DIR / "b3_headline_table.csv", "policy", "headline"),
+        "b3": (RESULTS_DIR / "b3_headline_table.csv", "policy", None),
         "b4": (RESULTS_DIR / "b4_routing_table.csv", "router", "p50"),
         "b5": (RESULTS_DIR / "b5_headline_table.csv", "policy", None),
     }
     out: dict = {"grid": {"lambda": list(LAMBDAS), "mu": list(MUS)}, "suites": {}}
+
+    stats_path = RESULTS_DIR / "paper2_stats.json"
+    if stats_path.is_file():
+        stats = json.loads(stats_path.read_text())
+        rates = stats.get("b2_headline_rates") or {}
+        if rates:
+            suite_out = []
+            for name, r in rates.items():
+                sar, hazard, wrr = float(r["SAR"]), float(r["hazard"]), float(r["WRR"])
+                grid = [
+                    {"lambda": lam, "mu": mu, "U": u(sar, hazard, wrr, lam, mu)}
+                    for lam in LAMBDAS
+                    for mu in MUS
+                ]
+                suite_out.append({"name": name, "SAR": sar, "hazard": hazard, "WRR": wrr, "grid": grid})
+            blob = rank_suite(suite_out)
+            blob["source"] = "paper2_stats.b2_headline_rates"
+            out["suites"]["b2"] = blob
 
     for suite, (path, name_key, setting) in sources.items():
         rows = load_rows(path)
@@ -55,40 +102,18 @@ def main() -> int:
         for r in rows:
             sar = float(r.get("SAR") or r.get("sar") or 0)
             hazard = float(r.get("hazard") or r.get("hazardous_publish_rate") or 0)
-            wrr = float(r.get("WRR") or r.get("wrr") or 0)
+            reported_wrr = float(r.get("WRR") or r.get("wrr") or 0)
+            mean_r = r.get("mean_reward") or r.get("utility")
+            mean_r_f = float(mean_r) if mean_r not in (None, "") else None
+            wrr = trial_wrr(sar, hazard, reported_wrr, mean_r_f)
             name = r[name_key]
-            grid = []
-            for lam in LAMBDAS:
-                for mu in MUS:
-                    grid.append({"lambda": lam, "mu": mu, "U": u(sar, hazard, wrr, lam, mu)})
-            # Ranking stability vs default λ=5, μ=1
-            default_rank = sorted(
-                [(r2[name_key], float(r2.get("SAR") or 0), float(r2.get("hazard") or 0), float(r2.get("WRR") or 0)) for r2 in rows],
-                key=lambda t: -u(t[1], t[2], t[3], 5.0, 1.0),
-            )
+            grid = [
+                {"lambda": lam, "mu": mu, "U": u(sar, hazard, wrr, lam, mu)}
+                for lam in LAMBDAS
+                for mu in MUS
+            ]
             suite_out.append({"name": name, "SAR": sar, "hazard": hazard, "WRR": wrr, "grid": grid})
-        # ranking matrices
-        rankings = {}
-        for lam in LAMBDAS:
-            for mu in MUS:
-                ordered = sorted(suite_out, key=lambda x: -u(x["SAR"], x["hazard"], x["WRR"], lam, mu))
-                rankings[f"l{lam}_m{mu}"] = [x["name"] for x in ordered]
-        baseline = rankings.get("l5.0_m1.0", [])
-        kendallish = {}
-        for key, order in rankings.items():
-            # Spearman footrule / pairwise agreement with baseline
-            if not baseline:
-                continue
-            pos_b = {n: i for i, n in enumerate(baseline)}
-            agree = 0
-            total = 0
-            for i, a in enumerate(order):
-                for b in order[i + 1 :]:
-                    total += 1
-                    if pos_b[a] < pos_b[b]:
-                        agree += 1
-            kendallish[key] = agree / total if total else 1.0
-        out["suites"][suite] = {"policies": suite_out, "rankings": rankings, "rank_agreement_vs_default": kendallish}
+        out["suites"][suite] = rank_suite(suite_out)
 
     path = RESULTS_DIR / "utility_sensitivity.json"
     path.write_text(json.dumps(out, indent=2))
