@@ -8,10 +8,10 @@ TAG="${PAPER2_TAG:-phase_p}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 CACHE="experiments/results/perception_cache/${TAG}.jsonl"
-RELEASE_URL="${PAPER2_CACHE_URL:-https://github.com/lucadagati/XAIR_AI_Native_Action_Intents/releases/download/paper2-b1b5-v0.2/phase_p.jsonl}"
+RELEASE_URL="${PAPER2_CACHE_URL:-https://github.com/lucadagati/XAIR_AI_Native_Action_Intents/releases/download/paper2-b1b5-v0.3/phase_p.jsonl}"
 if [[ ! -f "$CACHE" ]]; then
   echo "[reproduce] ERROR: missing perception cache: $CACHE" >&2
-  echo "[reproduce] Download the v0.2 release asset and place it there:" >&2
+  echo "[reproduce] Download the v0.3 release asset and place it there:" >&2
   echo "  $RELEASE_URL" >&2
   exit 1
 fi
@@ -73,8 +73,8 @@ for name in files:
     entries.append({"path": str(p), "sha256": h, "bytes": p.stat().st_size})
 out = {
     "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "tag": "paper2-b1b5-v0.2",
-    "note": "Offline Paper-2 freeze; Phase P cache assumed present; no GPU re-infer.",
+    "tag": "paper2-b1b5-v0.3",
+    "note": "Offline Paper-2 freeze; schema-blocking XAIR gate; B5 without GT revoke features; B4 post-hoc selection; Phase P cache assumed present; no GPU re-infer.",
     "artifacts": entries,
 }
 path = root / "paper2_release_manifest.json"

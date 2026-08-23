@@ -33,6 +33,7 @@ from experiments.paper2_common import (  # noqa: E402
 from experiments.paper2_splits import load_split  # noqa: E402
 from experiments.run_b2_validity_frontier import (  # noqa: E402
     HEADLINE as B2_HEADLINE_GRID,
+    LEGACY_VACUOUS as B2_LEGACY_VACUOUS,
     ReplayRecord,
     load_replay_records,
     mcnemar,
@@ -480,8 +481,10 @@ def main() -> int:
         "headline_config": HEADLINE,
         "b2_grid_note": (
             "The full B2 freshness × p_drift × drift_offset grid is exploratory. "
-            f"Headline claims use pre-declared config; vacuous w={B2_HEADLINE_GRID['freshness_ms']}ms "
-            "headline noted separately."
+            "Headline claims use the designated primary analysis cell "
+            f"(w={HEADLINE['freshness_ms']}ms); the legacy vacuous "
+            f"w={B2_LEGACY_VACUOUS['freshness_ms']}ms cell is retained only for completeness "
+            "when Δ_inf exceeds the window."
         ),
         "frame_split": {
             "n_train": sum(1 for v in split.values() if v == "train"),
@@ -523,9 +526,9 @@ def main() -> int:
     b2_sum = RESULTS_DIR / "b2_validity_frontier.json"
     if b2_sum.is_file():
         prev = json.loads(b2_sum.read_text())
-        out["b2_headline_w500_paired_tests"] = prev.get("paired_tests")
+        out["b2_headline_w500_paired_tests"] = prev.get("paired_tests_legacy_w500")
         out["b2_headline_w500_note"] = (
-            f"At w={B2_HEADLINE_GRID['freshness_ms']}ms both temporal gates revoke all intents; "
+            f"At w={B2_LEGACY_VACUOUS['freshness_ms']}ms both temporal gates revoke all intents; "
             "McNemar freshness_only vs xair is vacuous."
         )
 

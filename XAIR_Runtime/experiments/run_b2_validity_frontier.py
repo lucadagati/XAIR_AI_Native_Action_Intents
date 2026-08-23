@@ -13,7 +13,9 @@ The replay is a deterministic model of the publication boundary rather than a li
   * drift, when scheduled, lands ``drift_offset_ms`` after acquisition, so the context is
     invalid at evaluation exactly when the drift beat the submission;
   * ``direct`` publishes unconditionally, ``freshness_only`` applies the temporal window,
-    and ``xair`` applies the temporal window and the model's own preconditions.
+    and ``xair`` rejects schema failures, then applies the temporal window and the
+    model's own preconditions (unresolved / all-invalid precondition syntax fails;
+    an intentionally empty precondition list is a vacuous pass when schema is valid).
 
 A separate fidelity check (``--fidelity N``) replays a random sample against the live
 adapter and XAIR runtime and reports the disagreement rate, which is what licenses using
@@ -67,8 +69,10 @@ DRIFT_OFFSET_GRID_MS = (0, 250, 500, 1000, 2000, 4000)
 ANCHORS = ("capture", "emission")
 SEEDS = (1, 2, 3, 4, 5)
 
-# The configuration whose per-trial rows are kept for paired significance testing.
-HEADLINE = {"freshness_ms": 500, "p_drift": 0.5, "drift_offset_ms": 250, "anchor": "capture"}
+# Designated primary analysis cell (paired rows + publication stats). The legacy
+# w=500 ms cell is vacuous under capture anchoring because nearly all Δ_inf exceed it.
+LEGACY_VACUOUS = {"freshness_ms": 500, "p_drift": 0.5, "drift_offset_ms": 250, "anchor": "capture"}
+HEADLINE = {"freshness_ms": 4000, "p_drift": 0.5, "drift_offset_ms": 250, "anchor": "capture"}
 
 
 def merge_context(base: dict, patch: dict) -> dict:
@@ -97,9 +101,9 @@ class ReplayRecord:
 
     __slots__ = (
         "frame_id", "use_case", "model", "prompt_variant", "latency_ms", "gt_action",
-        "model_action", "grounding_correct", "schema_valid", "n_preconditions",
-        "preconds_hold_nominal", "preconds_hold_drifted", "severity", "defect_present",
-        "category",
+        "model_action", "grounding_correct", "schema_valid", "gate_schema_valid",
+        "n_preconditions", "preconds_hold_nominal", "preconds_hold_drifted",
+        "severity", "defect_present", "category",
     )
 
     def __init__(self, record: dict, episode: dict, *, use_repaired: bool):
@@ -116,17 +120,30 @@ class ReplayRecord:
         self.category = episode.get("category", "")
 
         key = "preconditions_repaired" if use_repaired else "preconditions"
-        exprs = [e for e in (record.get(key) or []) if precondition_syntax_ok(e)]
-        emitted = record.get(key) or []
+        emitted = list(record.get(key) or [])
+        valid_exprs = [e for e in emitted if precondition_syntax_ok(e)]
+        any_invalid_syntax = len(valid_exprs) < len(emitted)
         self.n_preconditions = len(emitted)
         self.schema_valid = bool(
             record.get("schema_valid_repaired" if use_repaired else "schema_valid")
         )
+        # Gate rejects recorded schema failure and unresolved/invalid precondition syntax.
+        self.gate_schema_valid = bool(self.schema_valid) and not any_invalid_syntax
 
         nominal = nominal_context(episode)
         drifted = merge_context(nominal, drift_patch(episode))
-        self.preconds_hold_nominal = all_hold(nominal, exprs) if exprs else True
-        self.preconds_hold_drifted = all_hold(drifted, exprs) if exprs else True
+        if not valid_exprs:
+            # Intentional empty list → vacuous pass; emitted-but-all-invalid → fail.
+            hold = not bool(emitted)
+            self.preconds_hold_nominal = hold
+            self.preconds_hold_drifted = hold
+        elif any_invalid_syntax:
+            # Do not silently drop unresolved expressions.
+            self.preconds_hold_nominal = False
+            self.preconds_hold_drifted = False
+        else:
+            self.preconds_hold_nominal = all_hold(nominal, valid_exprs)
+            self.preconds_hold_drifted = all_hold(drifted, valid_exprs)
 
 
 def load_replay_records(
@@ -183,7 +200,12 @@ def load_replay_records(
 
 
 def gate_publishes(
-    gate: str, *, elapsed_ms: float, freshness_ms: int, preconds_hold: bool
+    gate: str,
+    *,
+    elapsed_ms: float,
+    freshness_ms: int,
+    preconds_hold: bool,
+    schema_valid: bool = True,
 ) -> tuple[bool, str]:
     """Model one gate's publication decision, and why."""
     fresh = elapsed_ms <= freshness_ms
@@ -192,6 +214,8 @@ def gate_publishes(
     if gate == "freshness_only":
         return (True, "fresh") if fresh else (False, "stale_window")
     if gate == "xair":
+        if not schema_valid:
+            return False, "schema_invalid"
         if not fresh:
             return False, "stale_window"
         return (True, "validated") if preconds_hold else (False, "precondition_failed")
@@ -209,7 +233,11 @@ def replay_one(
     elapsed_ms = rec.latency_ms if anchor == "capture" else 0.0
     preconds_hold = rec.preconds_hold_drifted if invalid_at_submit else rec.preconds_hold_nominal
     published, reason = gate_publishes(
-        gate, elapsed_ms=elapsed_ms, freshness_ms=freshness_ms, preconds_hold=preconds_hold
+        gate,
+        elapsed_ms=elapsed_ms,
+        freshness_ms=freshness_ms,
+        preconds_hold=preconds_hold,
+        schema_valid=rec.gate_schema_valid,
     )
     # The offline context is deterministic, so the trial is never ambiguous.
     measurement = Measurement(
@@ -448,10 +476,23 @@ def anchor_effect(rows: list[dict]) -> dict:
                 }
             )
     worst = max(deltas, key=lambda d: d["delta_SER"], default=None)
+    by_gate: dict[str, list[float]] = defaultdict(list)
+    for d in deltas:
+        by_gate[str(d["gate"])].append(float(d["delta_SER"]))
+    mean_by_gate = {
+        g: (sum(vals) / len(vals) if vals else 0.0) for g, vals in sorted(by_gate.items())
+    }
+    # Direct path has no temporal check, so emission vs capture is near-zero noise;
+    # report temporal gates separately for the blind-spot claim.
+    temporal = [d for d in deltas if d["gate"] in ("freshness_only", "xair")]
     return {
         "configurations_compared": len(deltas),
         "mean_delta_SER": (
             sum(d["delta_SER"] for d in deltas) / len(deltas) if deltas else 0.0
+        ),
+        "mean_delta_SER_by_gate": mean_by_gate,
+        "mean_delta_SER_temporal_gates": (
+            sum(d["delta_SER"] for d in temporal) / len(temporal) if temporal else 0.0
         ),
         "max_delta_SER": worst,
     }

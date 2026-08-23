@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Suite B4 — latency-aware model routing.
+Suite B4 — post-hoc selection among cached VLM outputs.
 
-For frames where multiple VLMs produced blind decisions, compare static model
-choices against routers that trade grounding accuracy against inference latency
-under capture-anchored XAIR validation and increasing plant volatility.
+For frames where Phase P already produced blind decisions from multiple models,
+compare static model choices against offline selectors that inspect cached
+latency, schema validity, and precondition counts. This is not a live
+pre-inference router: all candidate outputs exist before selection, and the
+reported latency is that of the chosen decision (not multi-model wall-clock).
 
 Usage:
     python3 experiments/run_b4_model_routing.py --tag phase_p
