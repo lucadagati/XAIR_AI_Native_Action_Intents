@@ -81,7 +81,11 @@ def submit_attempt(
     invalid = plant.invalid_at(submit_ms)
     preconds = rec.preconds_hold_drifted if invalid else rec.preconds_hold_nominal
     published, reason = gate_publishes(
-        gate, elapsed_ms=elapsed, freshness_ms=w, preconds_hold=preconds
+        gate,
+        elapsed_ms=elapsed,
+        freshness_ms=w,
+        preconds_hold=preconds,
+        schema_valid=getattr(rec, "gate_schema_valid", rec.schema_valid),
     )
     measurement = Measurement(
         context_valid_before=not invalid,
@@ -128,6 +132,9 @@ def next_escalate_model(current: str, available: dict[str, ReplayRecord]) -> str
     return None
 
 
+REASON_FEATURE_KEYS = ("stale_window", "precondition_failed", "schema_invalid")
+
+
 def episode_features(
     first: AttemptResult,
     rec: ReplayRecord,
@@ -135,16 +142,15 @@ def episode_features(
     n_steps: int,
     can_escalate: bool,
 ) -> list[float]:
-    """Features available after the first revoke (no GT labels)."""
+    """Observable features after the first revoke (no GT-derived labels)."""
     lat = float(rec.latency_ms)
+    reason = str(first.scored.get("reason") or "")
     return [
         lat / 1000.0,
         math.log1p(lat),
         float(rec.n_preconditions) / 10.0,
         1.0 if rec.schema_valid else 0.0,
-        1.0 if first.scored.get("correct_revoke") else 0.0,
-        1.0 if first.scored.get("wrongful_revoke") else 0.0,
-        1.0 if first.scored.get("blocked_grounding_error") else 0.0,
+        *[1.0 if reason == key else 0.0 for key in REASON_FEATURE_KEYS],
         float(n_steps),
         1.0 if can_escalate else 0.0,
     ]
@@ -203,7 +209,11 @@ def _lookahead_reward(
         invalid = plant.invalid_at(submit_ms)
         preconds = rec.preconds_hold_drifted if invalid else rec.preconds_hold_nominal
         published, _ = gate_publishes(
-            "xair", elapsed_ms=elapsed, freshness_ms=w, preconds_hold=preconds
+            "xair",
+            elapsed_ms=elapsed,
+            freshness_ms=w,
+            preconds_hold=preconds,
+            schema_valid=getattr(rec, "gate_schema_valid", rec.schema_valid),
         )
         measurement = Measurement(
             context_valid_before=not invalid,
@@ -304,7 +314,11 @@ def run_episode(
             invalid = plant.invalid_at(submit_ms)
             preconds = rec.preconds_hold_drifted if invalid else rec.preconds_hold_nominal
             published, reason = gate_publishes(
-                "xair", elapsed_ms=elapsed, freshness_ms=w, preconds_hold=preconds
+                "xair",
+                elapsed_ms=elapsed,
+                freshness_ms=w,
+                preconds_hold=preconds,
+                schema_valid=getattr(rec, "gate_schema_valid", rec.schema_valid),
             )
             measurement = Measurement(
                 context_valid_before=not invalid,

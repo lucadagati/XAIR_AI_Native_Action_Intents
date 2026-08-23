@@ -8,11 +8,11 @@ This document describes how to reproduce the **CPU/offline** Paper‑2 analyses 
 
 **Environment:** Python 3.10+ with `numpy` (LinUCB). Optional: `scipy` (exact McNemar uses SciPy when present, otherwise a stdlib log-sum-exp fallback). No GPU.
 
-## Release assets (`paper2-b1b5-v0.2`)
+## Release assets (`paper2-b1b5-v0.3`)
 
 Download from GitHub Releases:
 
-https://github.com/lucadagati/XAIR_AI_Native_Action_Intents/releases/tag/paper2-b1b5-v0.2
+https://github.com/lucadagati/XAIR_AI_Native_Action_Intents/releases/tag/paper2-b1b5-v0.3
 
 Place the cache at `XAIR_Runtime/experiments/results/perception_cache/phase_p.jsonl` (SHA-256 in `paper2_release_manifest.json`).
 
@@ -32,11 +32,11 @@ Place the cache at `XAIR_Runtime/experiments/results/perception_cache/phase_p.js
 |-------|--------|-------|
 | Split | `experiments/paper2_splits.py` | 70/30 by `frame_id`, seed 42 |
 | B1 | `experiments/run_b1_grounding.py`, `run_b1_baselines.py` | Blind grounding + majority/confusion |
-| B2 | `experiments/run_b2_validity_frontier.py` | Exploratory full-cache grid |
+| B2 | `experiments/run_b2_validity_frontier.py` | Exploratory full-cache grid; XAIR blocks schema failures |
 | Stats | `experiments/run_paper2_stats.py` | Frame-cluster bootstrap; exact McNemar (Yates secondary) |
 | B3 | `experiments/run_b3_validity_budget.py` | No GT severity in headline features; 10 fixed + train-selected best; `--privileged-severity` ablation |
-| B4 | `experiments/run_b4_model_routing.py` | Routers on test frames, seeds `{1..5}` |
-| B5 | `experiments/run_b5_agent_policy.py` | Cache-reuse policy simulation; no VLM re-infer |
+| B4 | `experiments/run_b4_model_routing.py` | Post-hoc selection among cached outputs, seeds `{1..5}` |
+| B5 | `experiments/run_b5_agent_policy.py` | Cache-reuse policy simulation; no GT revoke features; no VLM re-infer |
 | GT cut | `experiments/run_gt_threshold_sensitivity.py` | CPU mask-area threshold flips |
 | Bundle | `scripts/reproduce_paper2_offline.sh` | Fail-fast if the cache is missing |
 
@@ -45,7 +45,7 @@ Place the cache at `XAIR_Runtime/experiments/results/perception_cache/phase_p.js
 ```bash
 cd XAIR_Runtime
 export PYTHONPATH=$PWD
-# Download phase_p.jsonl from the v0.2 release into:
+# Download phase_p.jsonl from the v0.3 release into:
 #   experiments/results/perception_cache/phase_p.jsonl
 ./scripts/reproduce_paper2_offline.sh
 ```

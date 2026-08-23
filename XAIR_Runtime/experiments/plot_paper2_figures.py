@@ -34,7 +34,8 @@ GATE_COLOR = {
     "xair": "#27ae60",
 }
 MARKER = {"capture": "o", "emission": "s"}
-HEADLINE = dict(freshness_ms=500, p_drift=0.5, drift_offset_ms=250, anchor="capture")
+HEADLINE = dict(freshness_ms=4000, p_drift=0.5, drift_offset_ms=250, anchor="capture")
+LEGACY_VACUOUS = dict(freshness_ms=500, p_drift=0.5, drift_offset_ms=250, anchor="capture")
 
 
 def apply_style() -> None:
@@ -131,10 +132,7 @@ def plot_validity_frontier(rows: list[dict], dest: Path) -> None:
                 label=GATE_LABEL[gate],
                 color=GATE_COLOR[gate],
             )
-            if ci_field:
-                lo = [r[ci_field][0] for r in pts]
-                hi = [r[ci_field][1] for r in pts]
-                ax.fill_between(xs, lo, hi, color=GATE_COLOR[gate], alpha=0.15)
+            # Wilson bands omit frame clustering; headline CIs use frame-cluster bootstrap.
         ax.set_xscale("log")
         ax.set_xlabel("Freshness window (ms)")
         ax.set_ylabel(ylabel)
@@ -180,7 +178,6 @@ def plot_anchor_blindspot(rows: list[dict], dest: Path) -> None:
             label=f"{anchor} anchor",
             linestyle="-" if anchor == "capture" else "--",
         )
-        ax.fill_between(xs, lo, hi, alpha=0.12)
     ax.set_xscale("log")
     ax.set_xlabel("Freshness window (ms)")
     ax.set_ylabel("Stale execution rate (SER)")
@@ -654,17 +651,35 @@ def plot_b4_static_pareto(pareto_csv: Path, dest: Path) -> None:
     rows = list(csv.DictReader(pareto_csv.open()))
     if not rows:
         return
-    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    style = {
+        "qwen2.5vl:3b": ("Qwen 3B", "#27ae60", "o"),
+        "qwen2.5vl:7b": ("Qwen 7B", "#2980b9", "s"),
+        "llama3.2-vision:11b": ("Llama 11B", "#8e44ad", "D"),
+        "gemma3:12b": ("Gemma 12B", "#c0392b", "^"),
+        "qwen2.5vl:32b": ("Qwen 32B", "#e67e22", "P"),
+    }
+    fig, ax = plt.subplots(figsize=(6.2, 3.8))
     for r in rows:
+        key = r["model"]
+        label, color, marker = style.get(key, (key, "#2c3e50", "o"))
         x = float(r["latency_p50_ms"]) / 1000.0
         y = float(r["grounding"])
-        label = r["model"].replace("qwen2.5vl:", "qwen:").replace("llama3.2-vision:", "llama:")
-        ax.scatter([x], [y], s=80, zorder=3)
-        ax.annotate(label, (x, y), textcoords="offset points", xytext=(6, 4), fontsize=8)
+        ax.scatter(
+            [x],
+            [y],
+            s=90,
+            zorder=3,
+            color=color,
+            marker=marker,
+            edgecolors="black",
+            linewidths=0.6,
+            label=label,
+        )
     ax.set_xlabel(r"Inference latency $p_{50}$ (s)")
     ax.set_ylabel("Blind grounding accuracy")
     ax.set_title("B4 static model Pareto (grounding vs latency)")
-    ax.set_ylim(0.3, 0.6)
+    ax.set_ylim(0.32, 0.56)
+    ax.legend(loc="lower right", frameon=True, fontsize=8)
     fig.tight_layout()
     save(fig, dest, "b4_static_pareto")
 
@@ -709,8 +724,9 @@ def plot_b5_policy_comparison(headline_csv: Path, dest: Path) -> None:
     # Prefer a stable display order.
     prefer = [
         "oracle",
-        "qlearn:e0.1",
         "single_shot",
+        "qlearn:e0.1",
+        "linucb:a0.75",
         "always_reobserve",
     ]
     by = {r["policy"]: r for r in rows}
