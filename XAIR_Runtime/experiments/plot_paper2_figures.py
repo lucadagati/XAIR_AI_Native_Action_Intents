@@ -474,7 +474,7 @@ def plot_architecture_diagram(dest: Path) -> None:
 
     _box(
         ax, 6.15, 5.35, 3.0, 0.9,
-        "Perception cache\n(amortised Phase P)",
+        "Perception cache\n(amortized Phase P)",
         facecolor="#f5eef8", edgecolor="#6c3483", fontsize=9,
     )
     _arrow(ax, (7.65, 6.85), (7.65, 6.25), color="#6c3483", lw=1.2)
@@ -488,7 +488,7 @@ def plot_architecture_diagram(dest: Path) -> None:
 
     _box(
         ax, 6.15, 3.85, 3.0, 1.35,
-        "XAIR gate\nfreshness + preconditions\nrecheck at $t_v$, $t_p$",
+        "XAIR gate\nschema + freshness + preconds\nrecheck at $t_v$, $t_p$",
         facecolor="#d5f5e3", edgecolor="#196f3d", fontsize=10, fontweight="bold",
     )
     _arrow(ax, (7.65, 6.85), (7.65, 5.2))
@@ -526,7 +526,7 @@ def plot_architecture_diagram(dest: Path) -> None:
     ax.text(
         0.3,
         0.25,
-        "The model proposes; XAIR authorises. No direct motor or topic publish from the VLM.",
+        "The model proposes; XAIR authorizes. No actuation path bypasses the validation boundary.",
         fontsize=9.5,
         color="#1c2833",
         style="italic",

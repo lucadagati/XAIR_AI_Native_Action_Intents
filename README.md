@@ -125,11 +125,18 @@ If you use this harness, please cite the XAIR runtime and the AI-native intents 
 
 ## Paper 2 offline reproduction (B1–B5)
 
-See [`XAIR_Runtime/PAPER2_ARTIFACT.md`](XAIR_Runtime/PAPER2_ARTIFACT.md) and:
+See [`XAIR_Runtime/PAPER2_ARTIFACT.md`](XAIR_Runtime/PAPER2_ARTIFACT.md).
+
+**Release:** [`paper2-b1b5-v0.3`](https://github.com/lucadagati/XAIR_AI_Native_Action_Intents/releases/tag/paper2-b1b5-v0.3)  
+Assets: `phase_p.jsonl` (Phase-P cache), `paper2-b1b5-v0.3-offline.zip` (split + B1–B5 aggregates + SHA-256 manifest).
 
 ```bash
-cd XAIR_Runtime && ./scripts/reproduce_paper2_offline.sh
+cd XAIR_Runtime
+mkdir -p experiments/results/perception_cache
+# download phase_p.jsonl from the v0.3 release into experiments/results/perception_cache/
+./scripts/reproduce_paper2_offline.sh
 ```
 
-Requires a Phase-P perception cache under `experiments/results/perception_cache/`. CPU-only; no GPU Phase P re-run.
+CPU-only; does not re-run GPU Phase P or call Ollama. The manuscript PDF stays out of this repository.
+
 
