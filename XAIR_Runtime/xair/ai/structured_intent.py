@@ -192,10 +192,13 @@ _PRECOND_PATTERN = re.compile(
     r"|(?P<bval>true|false|True|False)"
     r"|(?P<nval>-?\d+(?:\.\d+)?))$"
 )
+# Same bare-"=" -> "==" normalization ContextValidator._check applies before matching,
+# so this offline check does not score a live-admissible expression as invalid syntax.
+_BARE_EQUALS = re.compile(r"(?<![!<>=])=(?!=)")
 
 
 def precondition_syntax_ok(expr: str) -> bool:
-    return bool(_PRECOND_PATTERN.match(expr.strip()))
+    return bool(_PRECOND_PATTERN.match(_BARE_EQUALS.sub("==", expr.strip())))
 
 
 # A bare word where a literal belongs: `line.state != RUN` instead of `line.state != 'RUN'`.

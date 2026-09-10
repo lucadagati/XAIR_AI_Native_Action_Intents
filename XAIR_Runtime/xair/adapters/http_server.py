@@ -176,17 +176,29 @@ def get_intent(intent_id: str):
     }
 
 
+_TERMINAL_STATES = (IntentState.EXECUTED, IntentState.REVOKED, IntentState.EXPIRED)
+
+
 @app.delete("/v1/intents/{intent_id}")
 def revoke_intent(intent_id: str):
     record = runtime.lifecycle.get(intent_id)
     if not record:
         raise HTTPException(status_code=404, detail="intent not found")
+    if record.state in _TERMINAL_STATES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"cannot supervisory-revoke a terminal intent (state={record.state.value})",
+        )
+    was_authorized = record.state == IntentState.AUTHORIZED
     runtime.lifecycle.transition(
         intent_id, IntentState.REVOKED, DecisionOutcome.REVOKE, "human_supervisory_revoke"
     )
-    # An AUTHORIZED intent holds its target lock (coordinator.acquire); a
-    # supervisory revoke must free it, or the target stays busy forever.
-    runtime.coordinator.release(record.intent)
+    if was_authorized:
+        # Only an AUTHORIZED intent holds its target lock (coordinator.acquire
+        # in runtime.process_intent); releasing unconditionally would double-
+        # release (a no-op discard(), but still incorrect for any future
+        # coordinator with idempotency assumptions) for every other state.
+        runtime.coordinator.release(record.intent)
     return {"id": intent_id, "state": "REVOKED"}
 
 
