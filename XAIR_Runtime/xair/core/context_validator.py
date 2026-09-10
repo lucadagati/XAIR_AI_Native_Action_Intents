@@ -65,7 +65,8 @@ class ContextValidator:
             return False, "eval_timeout"
         expr = expr.strip()
         if not expr:
-            return True, expr
+            return False, "empty_expression"
+        expr = re.sub(r"(?<![!<>=])=(?!=)", "==", expr)
         m = self._PATTERN.match(expr)
         if not m:
             return False, f"unsupported: {expr}"

@@ -57,21 +57,21 @@ def main() -> int:
     o = rt.process_intent(ActionIntent.from_dict(_intent_dict(timestamp_decision=past, freshness_window_ms=50)))
     results.append({"case": "REVOKE_freshness", "outcome": o.outcome.value if o.outcome else None, "pass": o.outcome == DecisionOutcome.REVOKE})
 
-    rt = XAIRRuntime(context={"line": {"state": "PAUSED"}, "gripper": {"state": "OPEN"}})
+    rt = XAIRRuntime(context={"line": {"state": "RUN"}, "gripper": {"state": "OPEN"}})
     holder = ActionIntent.from_dict(_intent_dict(id="hold-robot-3", payload={"action_type": "MOVE", "target_entity": "robot_3", "parameters": {}}))
     rt.coordinator.acquire(holder)
     o = rt.process_intent(ActionIntent.from_dict(_intent_dict(payload={"action_type": "GRASP", "target_entity": "robot_3", "parameters": {}})))
     results.append({"case": "DELAY_busy_target", "outcome": o.outcome.value if o.outcome else None, "pass": o.outcome == DecisionOutcome.DELAY})
 
     rt = XAIRRuntime(context={"line": {"state": "RUN"}, "gripper": {"state": "OPEN"}})
-    o = rt.process_intent(ActionIntent.from_dict(_intent_dict(payload={"action_type": "RESUME", "target_entity": "line_1", "parameters": {}, "degradation_policy": "reduced_speed"})))
+    o = rt.process_intent(ActionIntent.from_dict(_intent_dict(payload={"action_type": "RESUME", "target_entity": "line_1", "parameters": {}, "degradation_policy": "reduce_speed"})))
     results.append({"case": "DEGRADE", "outcome": o.outcome.value if o.outcome else None, "pass": o.outcome == DecisionOutcome.DEGRADE})
 
     iid = str(uuid.uuid4())
     rt3 = XAIRRuntime(context={"line": {"state": "RUN"}, "gripper": {"state": "OPEN"}})
     intent = ActionIntent.from_dict(_intent_dict(
         id=iid,
-        payload={"action_type": "RESUME", "target_entity": "line_1", "parameters": {}, "degradation_policy": "reduced_speed"},
+        payload={"action_type": "RESUME", "target_entity": "line_1", "parameters": {}, "degradation_policy": "reduce_speed"},
     ))
     o_deg = rt3.process_intent(intent)
     deg_outcome = o_deg.outcome.value if o_deg.outcome else None
