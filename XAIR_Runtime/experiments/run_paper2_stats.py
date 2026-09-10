@@ -413,26 +413,6 @@ def bootstrap_from_jsonl(
     return {
         k: bootstrap_utility_frames(vs, n_boot=n_boot, seed=seed) for k, vs in grouped.items()
     }
-    if not path.is_file():
-        return []
-    rows = []
-    with path.open() as fh:
-        for r in csv.DictReader(fh):
-            for k, v in list(r.items()):
-                if v in ("True", "true", "1"):
-                    r[k] = True
-                elif v in ("False", "false", "0"):
-                    r[k] = False
-                else:
-                    try:
-                        if v is not None and v != "" and "." in v:
-                            r[k] = float(v)
-                        elif v is not None and v.isdigit():
-                            r[k] = int(v)
-                    except ValueError:
-                        pass
-            rows.append(r)
-    return rows
 
 
 def bootstrap_from_seed_utilities(seed_utils: list[float], *, n_boot: int = 1000, seed: int = 0) -> dict:

@@ -41,7 +41,7 @@ from experiments.run_b2_validity_frontier import (  # noqa: E402
     load_replay_records,
     replay_one,
 )
-from xair.ai.structured_intent import PerceptionResult, build_submission, precondition_syntax_ok  # noqa: E402
+from xair.ai.structured_intent import PerceptionResult, build_submission  # noqa: E402
 
 
 PRIMARY = "qwen2.5vl:7b"
@@ -114,10 +114,14 @@ def run_one_live(
     patched["capture_ts"] = _iso(capture)
     patched["emitted_ts"] = _iso(emitted)
     result = PerceptionResult.from_json(patched)
-    # Match Phase-G offline ReplayRecord: only syntax-ok exprs enter the gate model.
-    filtered = [e for e in (result.preconditions or []) if precondition_syntax_ok(e)]
+    # Match Phase-G offline ReplayRecord (gate_schema_valid): submit preconditions
+    # as emitted, unresolved syntax included. The offline model treats any invalid
+    # precondition syntax as an automatic schema failure rather than silently
+    # dropping it (see ReplayRecord.__init__ in run_b2_validity_frontier.py); this
+    # path must let the live gate see the same unresolved expressions to be a
+    # faithful comparison, not pre-filter them away client-side.
     intent = build_submission(
-        result, anchor=anchor, freshness_ms=freshness_ms, preconditions=filtered
+        result, anchor=anchor, freshness_ms=freshness_ms, preconditions=result.preconditions
     )
     t0 = time.perf_counter()
     resp = submit_intent(intent, gate)
@@ -168,16 +172,20 @@ def run_fidelity(
             continue
         episode = episodes[rec.frame_id]
         drift_fires = rng.random() < p_drift
-        # Capture-elapsed model: invalid when drift lands at/before submission.
-        # For emission offline elapsed=0, so invalid only if offset==0 and fires —
-        # but we keep the same plant flag for both anchors (drift applied or not)
-        # and let each path's timing semantics differ as in B2.
-        invalid_capture = bool(drift_fires and drift_offset_ms <= rec.latency_ms)
-        invalid_emission = bool(drift_fires and drift_offset_ms <= 0.0)
+        # Physical ground truth: whether drift has actually landed by submission
+        # time. This is a property of the plant, not of the validator's anchor —
+        # anchor only changes what elapsed time the freshness check *perceives*
+        # (see anchor= passed into replay_one/run_one_live below), so both anchors
+        # must share the same invalid_at_submit flag. (Previously this used a
+        # separate, anchor-dependent "invalid_emission" flag that was always False
+        # for any drift_offset_ms > 0, so emission-anchor trials never actually
+        # drifted the live plant and the fidelity check never exercised the
+        # "physically drifted but emission anchor hides it" case that half the
+        # comparisons were meant to cover.)
+        invalid = bool(drift_fires and drift_offset_ms <= rec.latency_ms)
 
         for gate in gates:
             for anchor in anchors:
-                invalid = invalid_capture if anchor == "capture" else invalid_emission
                 offline = replay_one(
                     rec,
                     gate=gate,

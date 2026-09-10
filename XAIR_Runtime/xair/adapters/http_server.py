@@ -103,6 +103,38 @@ def revoke_intent(intent_id: str):
     return {"id": intent_id, "state": "REVOKED"}
 
 
+class PublicationReport(BaseModel):
+    published: bool
+    reason: str
+    context_version: int | None = None
+
+
+@app.post("/v1/intents/{intent_id}/publication")
+def report_publication(intent_id: str, body: PublicationReport):
+    """
+    Confirm (or deny) publication for a previously authorized intent.
+
+    This releases the coordinator's resource lock on the intent's target
+    (``DistributedCoordinator.release``, called from ``confirm_publication``)
+    regardless of whether publication succeeded. Adapters call this after the
+    actuation attempt; without it, a target acquired via an EXECUTE decision
+    stays locked for the lifetime of the process and every later intent for
+    the same target is wrongly rejected as ``target_busy``.
+    """
+    try:
+        record = runtime.confirm_publication(
+            intent_id, body.published, body.reason, context_version=body.context_version
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="intent not found") from None
+    return {
+        "id": intent_id,
+        "state": record.state.value,
+        "outcome": record.outcome.value if record.outcome else None,
+        "reason": record.reason,
+    }
+
+
 @app.get("/v1/metrics")
 def metrics():
     return runtime.get_metrics()
