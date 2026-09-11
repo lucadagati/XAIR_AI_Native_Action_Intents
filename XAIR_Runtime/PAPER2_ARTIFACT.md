@@ -66,6 +66,25 @@ python3 experiments/run_utility_sensitivity.py
 
 Headline statistical claims use the **test split** (`n_frames=612`). The B2 frontier figure uses the full blind cache and is marked exploratory. B3 headline features are latency, confidence, precondition count, schema, VLM defect judgement, use-case, and model — not mask-derived severity.
 
+## Supplementary robustness checks
+
+Two additional offline checks support specific paper claims and are not part
+of the headline `reproduce_paper2_offline.sh` bundle (they read the same
+Phase-P cache, no GPU):
+
+```bash
+# Category-held-out generalization (nine of 27 categories assigned entirely
+# to test; supports the B1/B3 generalization claim in the paper's Results).
+python3 experiments/build_category_holdout_split.py
+python3 experiments/run_b3_validity_budget.py --tag phase_p --no-notify \
+  --split-path experiments/results/paper2_frame_split_category_holdout.json \
+  --out-suffix _cat_holdout
+
+# Precondition-repair utility sensitivity (repaired vs. as-emitted preconditions,
+# 168-cell freshness x p_drift x drift_offset grid, xair gate, capture anchor).
+python3 experiments/run_b2_repaired_sensitivity.py
+```
+
 ## Scope / non-goals
 
 - No Unity Play Mode / OPC UA HIL in this artifact freeze

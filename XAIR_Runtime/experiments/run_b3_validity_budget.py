@@ -321,6 +321,18 @@ def main() -> int:
         help="also train LinUCB/Q with GT severity one-hots (ablation only; default on)",
     )
     parser.add_argument("--no-notify", action="store_true")
+    parser.add_argument(
+        "--split-path",
+        default=None,
+        help="alternate frame-split JSON (e.g. a category-held-out split); "
+        "defaults to the standard frame-stratified paper2_frame_split.json",
+    )
+    parser.add_argument(
+        "--out-suffix",
+        default="",
+        help="suffix appended to every output filename, so an alternate-split run "
+        "does not overwrite the headline b3_* artifacts",
+    )
     args = parser.parse_args()
 
     notifier = Notifier.from_env()
@@ -334,7 +346,7 @@ def main() -> int:
         print("[b3] no records", file=sys.stderr)
         return 1
 
-    split = load_split()
+    split = load_split(Path(args.split_path)) if args.split_path else load_split()
     frame_id_fn = lambda p: p[0].frame_id  # noqa: E731
     train_pairs = filter_by_split(pairs, split="train", frame_id_fn=frame_id_fn, assignment=split)
     test_pairs = filter_by_split(pairs, split="test", frame_id_fn=frame_id_fn, assignment=split)
@@ -481,13 +493,14 @@ def main() -> int:
 
     out_dir = RESULTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
+    sfx = args.out_suffix
     paths = {
-        "summary": out_dir / "b3_validity_budget.json",
-        "eval_csv": out_dir / "b3_eval.csv",
-        "curve_csv": out_dir / "b3_learning_curves.csv",
-        "table_csv": out_dir / "b3_headline_table.csv",
-        "fixed_csv": out_dir / "b3_all_fixed_table.csv",
-        "trials": out_dir / "b3_eval_trials.jsonl",
+        "summary": out_dir / f"b3_validity_budget{sfx}.json",
+        "eval_csv": out_dir / f"b3_eval{sfx}.csv",
+        "curve_csv": out_dir / f"b3_learning_curves{sfx}.csv",
+        "table_csv": out_dir / f"b3_headline_table{sfx}.csv",
+        "fixed_csv": out_dir / f"b3_all_fixed_table{sfx}.csv",
+        "trials": out_dir / f"b3_eval_trials{sfx}.jsonl",
     }
     trial_count = 0
     with paths["trials"].open("w") as fh:
