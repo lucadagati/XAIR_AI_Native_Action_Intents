@@ -1,6 +1,6 @@
 # Manufacturing A1 vision dataset (VisA + MVTec AD)
 
-Curated frame pool for the Paper 2 suites B1-B6, standing in for a live camera with real
+Curated frame pool for the Paper 2 suites B1-B5, standing in for a live camera with real
 industrial inspection images.
 
 ## Sources

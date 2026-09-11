@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-A1 — legacy saturated ablation (superseded by suites B1-B6).
+A1 — legacy saturated ablation (superseded by suites B1-B5).
 
 Kept runnable for continuity with Paper 1, but this driver does NOT support any
 headline claim: drift is applied unconditionally, the ground truth is asserted rather

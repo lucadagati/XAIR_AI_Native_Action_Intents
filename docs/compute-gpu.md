@@ -1,6 +1,6 @@
 # GPU compute — NVIDIA L40 (Tailscale)
 
-Nodo remoto per inferenza VLM/LLM (Paper 2, suite A1–A4).  
+Nodo remoto per inferenza VLM/LLM (Paper 2, suites B1-B5).  
 **Non committare password o chiavi in questo repository.**
 
 ## Endpoint
@@ -48,4 +48,4 @@ export OLLAMA_HOST=http://100.86.223.16:11434
 
 ## Pipeline
 
-**Ollama su L40** → AIS JSON → **XAIR su dev host** → metriche SER/CRR (Paper 1).
+**Ollama su L40** → AIS JSON → **XAIR su dev host** → metriche SAR/Hazard/WRR (Paper 2, B1-B5).

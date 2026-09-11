@@ -1,5 +1,5 @@
 """
-Shared harness for the Paper 2 suites (B1-B6).
+Shared harness for the Paper 2 suites (B1-B5).
 
 Three things differ from the earlier ``a1_common`` harness, and each one was a
 validity threat rather than a refinement:

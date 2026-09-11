@@ -8,7 +8,7 @@ This repository contains the **runtime extensions, experiment drivers, dataset t
 
 | Path | Purpose |
 |------|---------|
-| `XAIR_Runtime/` | XAIR runtime + AI producer (`xair/ai/`), Paper 2 suites B1–B6 |
+| `XAIR_Runtime/` | XAIR runtime + AI producer (`xair/ai/`), Paper 2 suites B1–B5 |
 | `scripts/` | Stack startup, GPU access, campaign runners, Telegram notifications |
 | `config/` | Example env files (copy to `*.env`, never commit secrets) |
 | `docs/` | Operational notes: GPU node, dataset, research vision (markdown) |
